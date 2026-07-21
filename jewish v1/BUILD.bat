@@ -53,9 +53,11 @@ exit /b 1
 
 :find_vcvars
 set "VCVARS="
-for %%E in (BuildTools Community Professional Enterprise) do (
-    if exist "C:\Program Files\Microsoft Visual Studio\2022\%%E\VC\Auxiliary\Build\vcvars64.bat" (
-        set "VCVARS=C:\Program Files\Microsoft Visual Studio\2022\%%E\VC\Auxiliary\Build\vcvars64.bat"
+for %%Y in (2026 2025 2022) do (
+    for %%E in (BuildTools Community Professional Enterprise) do (
+        if exist "C:\Program Files\Microsoft Visual Studio\%%Y\%%E\VC\Auxiliary\Build\vcvars64.bat" (
+            set "VCVARS=C:\Program Files\Microsoft Visual Studio\%%Y\%%E\VC\Auxiliary\Build\vcvars64.bat"
+        )
     )
 )
 exit /b 0
