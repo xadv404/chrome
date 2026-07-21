@@ -215,10 +215,10 @@ fn extract_cookies(profile_path: &Path) -> Option<String> {
     let conn = Connection::open(&temp).ok()?;
 
     let mut stmt = conn
-        .prepare("SELECT host, name, value, path, expiry FROM moz_cookies")
+        .prepare("SELECT host, name, value, path, expiry, isSecure, isHttpOnly FROM moz_cookies")
         .ok()?;
 
-    let mut output = String::new();
+    let mut body = String::new();
     let rows = stmt
         .query_map([], |row| {
             let host: String = row.get(0)?;
@@ -226,27 +226,38 @@ fn extract_cookies(profile_path: &Path) -> Option<String> {
             let value: String = row.get(2)?;
             let path: String = row.get(3)?;
             let expiry: i64 = row.get(4)?;
-            Ok((host, name, value, path, expiry))
+            let is_secure: i32 = row.get(5)?;
+            let is_httponly: i32 = row.get(6)?;
+            Ok((host, name, value, path, expiry, is_secure, is_httponly))
         })
         .ok()?;
 
+    let mut count = 0;
     for row in rows.flatten() {
-        let (host, name, value, path, expiry) = row;
-        output.push_str(&format!(
-            "Host: {}\nName: {}\nValue: {}\nPath: {}\nExpires: {}\n{}\n",
-            host,
-            name,
-            value,
-            path,
+        let (host, name, value, path, expiry, is_secure, is_httponly) = row;
+        if name.is_empty() {
+            continue;
+        }
+        body.push_str(&super::netscape::format_line(
+            &host,
+            &path,
+            is_secure != 0,
             expiry,
-            "-".repeat(50)
+            &name,
+            &value,
+            is_httponly != 0,
         ));
+        count += 1;
     }
 
     drop(stmt);
     drop(conn);
     cleanup_db(&temp);
-    if output.is_empty() { None } else { Some(output) }
+    if count == 0 {
+        None
+    } else {
+        super::netscape::build_file(&body)
+    }
 }
 
 fn extract_history(profile_path: &Path) -> Option<String> {
