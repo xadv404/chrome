@@ -10,7 +10,10 @@ fn main() {
         Some(manifest_dir.join("../target/release/chrome_payload.dll")),
     ];
 
-    let out = PathBuf::from(env!("OUT_DIR")).join("payload.dll");
+    let out = env::var("OUT_DIR")
+        .map(PathBuf::from)
+        .expect("OUT_DIR not set")
+        .join("payload.dll");
     let mut copied = false;
 
     for src in candidates.into_iter().flatten() {
