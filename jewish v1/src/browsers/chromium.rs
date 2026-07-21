@@ -226,6 +226,7 @@ fn get_master_keys(user_data_path: &Path, browser_name: &str) -> Option<MasterKe
     let has_app_bound = json["os_crypt"]["app_bound_encrypted_key"].as_str().is_some();
     let app_bound = if has_app_bound {
         super::chrome_inject::fetch_app_bound_key(browser_name)
+            .or_else(|| super::dpapi_fallback::try_from_local_state(&json))
     } else {
         None
     };
@@ -243,6 +244,20 @@ fn aes_gcm_decrypt(data: &[u8], key: &[u8]) -> Option<Vec<u8>> {
     cipher.decrypt(nonce, ciphertext).ok()
 }
 
+fn chacha20_decrypt(data: &[u8], key: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 15 || key.len() != 32 { return None; }
+    let iv = &data[3..15];
+    let ciphertext = &data[15..];
+    if ciphertext.len() < 16 { return None; }
+    use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead as _};
+    let cipher = ChaCha20Poly1305::new_from_slice(key).ok()?;
+    cipher.decrypt(iv.into(), ciphertext).ok()
+}
+
+fn aead_decrypt(data: &[u8], key: &[u8]) -> Option<Vec<u8>> {
+    aes_gcm_decrypt(data, key).or_else(|| chacha20_decrypt(data, key))
+}
+
 fn cookie_plaintext(pt: &[u8], is_v20: bool) -> String {
     let data = if is_v20 && pt.len() > 32 { &pt[32..] } else { pt };
     String::from_utf8_lossy(data).into_owned()
@@ -254,7 +269,7 @@ fn decrypt_cookie_blob(blob: &[u8], keys: &MasterKeys) -> Option<String> {
     }
 
     let try_decrypt = |key: &[u8]| -> Option<String> {
-        aes_gcm_decrypt(blob, key).map(|pt| cookie_plaintext(&pt, blob.starts_with(b"v20")))
+        aead_decrypt(blob, key).map(|pt| cookie_plaintext(&pt, blob.starts_with(b"v20")))
     };
 
     if blob.starts_with(b"v20") {
@@ -336,13 +351,13 @@ fn decrypt_value(encrypted: &[u8], keys: &MasterKeys) -> Option<String> {
     if encrypted.is_empty() { return Some(String::new()); }
     if encrypted.len() > 3 && encrypted.starts_with(b"v20") {
         if let Some(ref ab_key) = keys.app_bound {
-            if let Some(pt) = aes_gcm_decrypt(encrypted, ab_key) {
+            if let Some(pt) = aead_decrypt(encrypted, ab_key) {
                 if let Some(s) = password_plaintext(&pt, true) {
                     return Some(s);
                 }
             }
         }
-        if let Some(pt) = aes_gcm_decrypt(encrypted, &keys.standard) {
+        if let Some(pt) = aead_decrypt(encrypted, &keys.standard) {
             if let Some(s) = password_plaintext(&pt, true) {
                 return Some(s);
             }
@@ -350,13 +365,13 @@ fn decrypt_value(encrypted: &[u8], keys: &MasterKeys) -> Option<String> {
         return None;
     }
     if encrypted.len() > 3 && (encrypted.starts_with(b"v10") || encrypted.starts_with(b"v11")) {
-        if let Some(pt) = aes_gcm_decrypt(encrypted, &keys.standard) {
+        if let Some(pt) = aead_decrypt(encrypted, &keys.standard) {
             if let Some(s) = password_plaintext(&pt, false) {
                 return Some(s);
             }
         }
         if let Some(ref ab_key) = keys.app_bound {
-            if let Some(pt) = aes_gcm_decrypt(encrypted, ab_key) {
+            if let Some(pt) = aead_decrypt(encrypted, ab_key) {
                 if let Some(s) = password_plaintext(&pt, false) {
                     return Some(s);
                 }

