@@ -56,7 +56,3 @@ pub const TARGETS: &[ChromiumTarget] = &[
 pub fn find_target(name: &str) -> Option<&'static ChromiumTarget> {
     TARGETS.iter().find(|t| t.name == name)
 }
-
-pub fn exe_for(name: &str) -> Option<&'static str> {
-    find_target(name).map(|t| t.exe)
-}

