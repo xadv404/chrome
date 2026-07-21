@@ -147,7 +147,6 @@ fn get_process_exe_path(pid: u32) -> Option<String> {
         let mut buf = vec![0u16; 1024];
         let mut size = buf.len() as u32;
         QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut size)
-            .ok()
             .ok()?;
         CloseHandle(proc).ok();
         Some(String::from_utf16_lossy(&buf[..size as usize]))
