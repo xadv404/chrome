@@ -41,23 +41,69 @@ exit /b 0
 :ensure_msvc
 call :find_vcvars
 if defined VCVARS (
-    call "!VCVARS!" >nul 2>&1
-    echo [OK] MSVC ready
+    if exist "!VCVARS!" (
+        call "!VCVARS!" >nul 2>&1
+        where cl >nul 2>&1
+        if not errorlevel 1 (
+            echo [OK] MSVC ready
+            echo     !VCVARS!
+            exit /b 0
+        )
+        echo [!] vcvars found but cl.exe missing
+        echo     Install workload: "Desktop development with C++"
+        echo     or "MSVC v143 - VS 2022 C++ x64/x86 build tools"
+    )
+)
+where link >nul 2>&1
+if not errorlevel 1 (
+    echo [OK] MSVC ready - link already in PATH
     exit /b 0
 )
-where link >nul 2>&1 && exit /b 0
-echo [X] Install Visual C++ Build Tools first
+echo [X] Visual C++ Build Tools not detected
+echo.
+echo     Open "Visual Studio Installer" and verify:
+echo       - Visual Studio Build Tools 2022
+echo       - Workload: "Desktop development with C++"
+echo         (or at least MSVC v143 build tools + Windows SDK)
+echo.
+echo     Expected file:
+echo       C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat
+echo.
+call :probe_msvc
 echo     https://visualstudio.microsoft.com/visual-cpp-build-tools/
 pause
 exit /b 1
 
 :find_vcvars
 set "VCVARS="
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq delims=" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
+        if exist "%%I\VC\Auxiliary\Build\vcvars64.bat" (
+            set "VCVARS=%%I\VC\Auxiliary\Build\vcvars64.bat"
+        )
+    )
+)
+if defined VCVARS exit /b 0
 for %%Y in (2026 2025 2022) do (
     for %%E in (BuildTools Community Professional Enterprise) do (
-        if exist "C:\Program Files\Microsoft Visual Studio\%%Y\%%E\VC\Auxiliary\Build\vcvars64.bat" (
-            set "VCVARS=C:\Program Files\Microsoft Visual Studio\%%Y\%%E\VC\Auxiliary\Build\vcvars64.bat"
-        )
+        set "_C=C:\Program Files\Microsoft Visual Studio\%%Y\%%E\VC\Auxiliary\Build\vcvars64.bat"
+        if exist "!_C!" set "VCVARS=!_C!"
+    )
+)
+exit /b 0
+
+:probe_msvc
+if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+    echo     Installed VS products:
+    "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -property displayName,installationPath 2>nul
+) else (
+    echo     vswhere.exe not found - VS Installer may be missing
+)
+for %%Y in (2026 2025 2022) do (
+    for %%E in (BuildTools Community Professional Enterprise) do (
+        set "_C=C:\Program Files\Microsoft Visual Studio\%%Y\%%E\VC\Auxiliary\Build\vcvars64.bat"
+        if exist "!_C!" echo     Found: !_C!
     )
 )
 exit /b 0
