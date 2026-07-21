@@ -207,7 +207,7 @@ fn extract_cookies(profile_path: &Path, keys: &MasterKeys) -> Option<String> {
     let temp = copy_db(&db_path)?;
     let conn = Connection::open(&temp).ok()?;
     let mut stmt = conn.prepare("SELECT host_key, name, encrypted_value, path, expires_utc, is_secure, is_httponly FROM cookies").ok()?;
-    let mut output = String::from("# Netscape HTTP Cookie File\n# https://curl.se/docs/http-cookies.html\n# Generated automatically.\n\n");
+    let mut output = String::new();
     let rows = stmt.query_map([], |row| {
         let host: String = row.get(0)?;
         let name: String = row.get(1)?;
@@ -221,18 +221,116 @@ fn extract_cookies(profile_path: &Path, keys: &MasterKeys) -> Option<String> {
     let mut count = 0;
     for row in rows.flatten() {
         let (host, name, enc_value, path, expires, is_secure, is_httponly) = row;
-        let value = decrypt_value(&enc_value, keys).unwrap_or_default();
-        if value.is_empty() && enc_value.is_empty() { continue; }
-        let unix_expires = if expires > 0 { (expires / 1_000_000) - 11644473600 } else { 0 };
-        let subdomain = if host.starts_with('.') { "TRUE" } else { "FALSE" };
+        if name.is_empty() {
+            continue;
+        }
+        let value = if enc_value.is_empty() {
+            String::new()
+        } else {
+            decrypt_value(&enc_value, keys).unwrap_or_default()
+        };
+        let unix_expires = if expires > 0 {
+            (expires / 1_000_000) - 11644473600
+        } else {
+            0
+        };
         let secure = if is_secure != 0 { "TRUE" } else { "FALSE" };
         let prefix = if is_httponly != 0 { "#HttpOnly_" } else { "" };
-        output.push_str(&format!("{}{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            prefix, host, subdomain, path, secure, unix_expires, name, value));
+        // domain \t include_subdomains \t path \t secure \t expiry \t name \t value
+        output.push_str(&format!(
+            "{}{}\tTRUE\t{}\t{}\t{}\t{}\t{}\n",
+            prefix, host, path, secure, unix_expires, name, value
+        ));
         count += 1;
     }
-    drop(stmt); drop(conn); cleanup_db(&temp);
+    drop(stmt);
+    drop(conn);
+    cleanup_db(&temp);
     if count == 0 { None } else { Some(output) }
+}
+
+fn profiles_from_local_state(user_data_path: &Path) -> Vec<(String, PathBuf)> {
+    let local_state = user_data_path.join("Local State");
+    let content = match fs::read_to_string(&local_state) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let json: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut profiles = Vec::new();
+    if let Some(cache) = json
+        .pointer("/profile/info_cache")
+        .and_then(|v| v.as_object())
+    {
+        for name in cache.keys() {
+            if name == "System Profile" {
+                continue;
+            }
+            let path = user_data_path.join(name);
+            if path.is_dir() {
+                profiles.push((name.clone(), path));
+            }
+        }
+    }
+
+    profiles.sort_by(|a, b| {
+        profile_sort_key(&a.0).cmp(&profile_sort_key(&b.0))
+    });
+    profiles
+}
+
+fn profile_sort_key(name: &str) -> (u8, u32, String) {
+    if name == "Default" {
+        return (0, 0, String::new());
+    }
+    if name == "Guest Profile" {
+        return (2, 0, String::new());
+    }
+    if let Some(n) = name.strip_prefix("Profile ") {
+        if let Ok(num) = n.parse::<u32>() {
+            return (1, num, String::new());
+        }
+    }
+    (1, u32::MAX, name.to_lowercase())
+}
+
+fn get_profiles(user_data_path: &Path, has_profiles: bool) -> Vec<(String, PathBuf)> {
+    if !has_profiles {
+        if user_data_path.exists() {
+            return vec![("Default".to_string(), user_data_path.to_path_buf())];
+        }
+        return Vec::new();
+    }
+
+    let mut profiles = profiles_from_local_state(user_data_path);
+    let mut seen: std::collections::HashSet<String> = profiles.iter().map(|(n, _)| n.clone()).collect();
+
+    if let Ok(entries) = fs::read_dir(user_data_path) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "System Profile" || name.starts_with('.') {
+                continue;
+            }
+            let is_profile = name == "Default"
+                || name == "Guest Profile"
+                || name.starts_with("Profile ")
+                || entry.path().join("Preferences").exists()
+                || entry.path().join("Network").join("Cookies").exists()
+                || entry.path().join("Cookies").exists();
+            if is_profile && seen.insert(name.clone()) {
+                profiles.push((name, entry.path()));
+            }
+        }
+    }
+
+    profiles.sort_by(|a, b| profile_sort_key(&a.0).cmp(&profile_sort_key(&b.0)));
+    profiles
 }
 
 fn extract_autofill(profile_path: &Path) -> Option<String> {
@@ -274,25 +372,6 @@ fn extract_history(profile_path: &Path) -> Option<String> {
     }
     drop(stmt); drop(conn); cleanup_db(&temp);
     if output.is_empty() { None } else { Some(output) }
-}
-
-fn get_profiles(user_data_path: &Path, has_profiles: bool) -> Vec<(String, PathBuf)> {
-    let mut profiles = Vec::new();
-    if has_profiles {
-        let default_path = user_data_path.join("Default");
-        if default_path.exists() { profiles.push(("Default".to_string(), default_path)); }
-        if let Ok(entries) = fs::read_dir(user_data_path) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("Profile ") && entry.path().is_dir() {
-                    profiles.push((name, entry.path()));
-                }
-            }
-        }
-    } else {
-        if user_data_path.exists() { profiles.push(("Default".to_string(), user_data_path.to_path_buf())); }
-    }
-    profiles
 }
 
 pub fn extract_all() -> Vec<(String, String)> {
