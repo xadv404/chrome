@@ -67,6 +67,7 @@ echo [*] Building embedded payload DLL...
 cargo build --release -p chrome-payload || goto build_fail
 
 echo [*] Building jewish.exe (payload embedded)...
+echo     Link step: ~30-90s with thin LTO (normal if it looks stuck at 237/238)
 cargo build --release -p jewish || goto build_fail
 
 if not exist release mkdir release

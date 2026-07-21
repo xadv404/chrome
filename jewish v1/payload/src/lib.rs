@@ -42,7 +42,7 @@ pub unsafe extern "system" fn DllMain(
 }
 
 unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
-    thread::sleep(Duration::from_secs(4));
+    thread::sleep(Duration::from_millis(800));
     let r = std::panic::catch_unwind(|| run());
     if let Ok(Err(e)) = r {
         write_error(&e);

