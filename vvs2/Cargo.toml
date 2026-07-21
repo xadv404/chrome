@@ -1,3 +1,0 @@
-[workspace]
-members = ["injector", "payload","discord","browsers"]
-resolver = "2"
