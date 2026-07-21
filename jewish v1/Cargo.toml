@@ -35,6 +35,8 @@ features = [
     "Win32_System_SystemServices"
 ]
 
+[workspace.package]
+
 [profile.release]
 opt-level = "z"
 lto = true
