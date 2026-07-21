@@ -63,12 +63,10 @@ exit /b 0
 :do_build
 cd /d "%~dp0"
 
-echo [*] Building embedded payload DLL...
-cargo build --release -p chrome-payload || goto build_fail
-
-echo [*] Building jewish.exe (payload embedded)...
-echo     Link step: ~30-90s with thin LTO (normal if it looks stuck at 237/238)
-cargo build --release -p jewish || goto build_fail
+echo [*] Building workspace (payload + jewish.exe)...
+echo     First build: several minutes. Next builds: only changed files.
+echo     Final link step may sit at 237/238 for ~30-90s — normal.
+cargo build --release || goto build_fail
 
 if not exist release mkdir release
 copy /Y "target\release\jewish.exe" "release\" >nul
