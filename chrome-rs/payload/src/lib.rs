@@ -12,7 +12,7 @@ mod elevator;
 mod crypto;
 mod database;
 
-use std::{ffi::c_void, path::PathBuf};
+use std::{ffi::c_void, path::PathBuf, thread, time::Duration};
 
 use windows::{
     Win32::{
@@ -43,6 +43,9 @@ pub unsafe extern "system" fn DllMain(
 
 unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
     debug_log("worker thread started");
+    // Let Chrome finish CoInitializeSecurity before we touch COM.
+    thread::sleep(Duration::from_secs(4));
+    debug_log("worker delay complete, starting run()");
     let r = std::panic::catch_unwind(|| run());
     match r {
         Ok(Ok(())) => { debug_log("run() completed OK"); }

