@@ -223,7 +223,7 @@ fn main() {
 
     if !dll_path.exists() {
         eprintln!("[!] Payload DLL not found: {}", dll_path.display());
-        eprintln!("    Build it first: cargo build --release -p chrome-payload --target x86_64-pc-windows-gnu");
+        eprintln!("    Build it first: cargo build --release -p chrome-payload");
         std::process::exit(1);
     }
 
