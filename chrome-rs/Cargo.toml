@@ -1,0 +1,3 @@
+[workspace]
+members = ["injector", "payload"]
+resolver = "2"
