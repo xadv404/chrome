@@ -494,7 +494,7 @@ fn extract_cookies(profile_path: &Path, keys: &MasterKeys) -> Option<String> {
     drop(conn);
     cleanup_db(&temp);
     if count == 0 {
-        Some(super::netscape::empty_file())
+        None
     } else {
         super::netscape::build_file(&body)
     }

