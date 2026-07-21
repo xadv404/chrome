@@ -1,4 +1,4 @@
-mod chrome_inject;
+pub mod chrome_inject;
 pub mod chromium;
 pub mod gecko;
 pub mod sender;

@@ -1,16 +1,11 @@
 [package]
-name = "chrome-recovery"
+name = "inject"
 version = "1.0.0"
 edition = "2021"
-
-[[bin]]
-name = "chrome-recovery"
-path = "src/main.rs"
 
 [dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
-    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Diagnostics_Debug",
@@ -18,10 +13,5 @@ windows = { version = "0.58", features = [
     "Win32_System_Memory",
     "Win32_System_LibraryLoader",
 ] }
-serde_json = "1"
 winreg = "0.50"
-
-[profile.release]
-opt-level = "z"
-strip = true
-lto = true
+serde_json = "1"

