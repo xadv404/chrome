@@ -8,9 +8,6 @@ fn main() {
         .join("payload.dll");
 
     let candidates = [
-        env::var("CARGO_BIN_FILE_CHROME_PAYLOAD_CHROME_PAYLOAD")
-            .ok()
-            .map(PathBuf::from),
         env::var("CHROME_PAYLOAD_DLL")
             .ok()
             .map(PathBuf::from),
