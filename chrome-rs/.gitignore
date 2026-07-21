@@ -1,1 +1,4 @@
 target/
+release/
+passwords.txt
+cookies.txt
