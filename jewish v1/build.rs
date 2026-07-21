@@ -2,31 +2,45 @@ use std::{env, fs, path::PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let candidates = [
-        env::var("CHROME_PAYLOAD_DLL")
-            .ok()
-            .map(PathBuf::from),
-        Some(manifest_dir.join("target/release/chrome_payload.dll")),
-        Some(manifest_dir.join("../target/release/chrome_payload.dll")),
-    ];
-
     let out = env::var("OUT_DIR")
         .map(PathBuf::from)
         .expect("OUT_DIR not set")
         .join("payload.dll");
-    let mut copied = false;
+
+    let candidates = [
+        env::var("CARGO_BIN_FILE_CHROME_PAYLOAD_CHROME_PAYLOAD")
+            .ok()
+            .map(PathBuf::from),
+        env::var("CHROME_PAYLOAD_DLL")
+            .ok()
+            .map(PathBuf::from),
+        Some(manifest_dir.join("target/release/chrome_payload.dll")),
+        env::var("CARGO_TARGET_DIR")
+            .ok()
+            .map(|d| PathBuf::from(d).join("release/chrome_payload.dll")),
+    ];
 
     for src in candidates.into_iter().flatten() {
-        if src.exists() {
-            fs::copy(&src, &out).expect("copy payload.dll into OUT_DIR");
-            println!("cargo:rerun-if-changed={}", src.display());
-            copied = true;
-            break;
+        if !src.exists() {
+            continue;
         }
+        let size = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+        if size == 0 {
+            continue;
+        }
+        fs::copy(&src, &out).expect("copy payload.dll into OUT_DIR");
+        println!("cargo:rerun-if-changed={}", src.display());
+        println!(
+            "cargo:warning=embedded payload from {} ({} bytes)",
+            src.display(),
+            size
+        );
+        return;
     }
 
-    if !copied {
-        fs::write(&out, b"").ok();
-        println!("cargo:warning=chrome_payload.dll not found — build payload first: cargo build -p chrome-payload --release");
-    }
+    panic!(
+        "chrome_payload.dll not found or empty.\n\
+         Run: cargo build --release -p chrome-payload\n\
+         Then: cargo build --release -p jewish"
+    );
 }
