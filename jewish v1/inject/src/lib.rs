@@ -103,9 +103,9 @@ impl Drop for Cleanup {
 
 fn target_exe(browser_name: &str) -> Option<&'static str> {
     match browser_name {
-        "Chrome" => Some("chrome.exe"),
-        "Brave" => Some("brave.exe"),
-        "Edge" => Some("msedge.exe"),
+        "Chrome" | "Chrome Beta" | "Chrome Dev" | "Chrome Canary" | "Chromium" => Some("chrome.exe"),
+        "Brave" | "Brave Beta" | "Brave Nightly" => Some("brave.exe"),
+        "Edge" | "Edge Beta" | "Edge Dev" => Some("msedge.exe"),
         _ => None,
     }
 }

