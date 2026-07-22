@@ -56,7 +56,10 @@ impl PipeServer {
             if Instant::now() >= deadline {
                 return Err("pipe timeout".into());
             }
-            if let Some(line) = self.try_read_line()? {
+            if let Some(line) = self
+                .try_read_line()
+                .map_err(|_| "pipe read failed".to_string())?
+            {
                 if let Some(key) = parse_line(&line) {
                     return Ok(key);
                 }

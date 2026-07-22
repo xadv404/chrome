@@ -21,7 +21,7 @@ pub fn apply_stealth() {
             CURRENT_THREAD,
             THREAD_HIDE_FROM_DEBUGGER,
             &mut hide as *mut u8 as *mut std::ffi::c_void,
-            mem::size_of::<u8>(),
+            mem::size_of::<u8>() as u32,
         );
     }
 }

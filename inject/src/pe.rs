@@ -117,7 +117,7 @@ pub fn parse_pe(data: &[u8]) -> Option<PeImage> {
         return None;
     }
 
-    let bootstrap_rva = export_rva_by_hash(data, H_BOOTSTRAP)?;
+    let bootstrap_rva = unsafe { export_rva_by_hash(data, H_BOOTSTRAP)? };
 
     Some(PeImage {
         size_of_image: opt.size_of_image as usize,
