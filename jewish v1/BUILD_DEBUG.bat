@@ -16,6 +16,16 @@ echo [1/2] chrome-payload...
 cargo build --profile stealth -p chrome-payload
 if errorlevel 1 goto end
 
+if exist "target\stealth\chrome_payload.dll" (
+    set "CHROME_PAYLOAD_DLL=%~dp0target\stealth\chrome_payload.dll"
+) else if exist "target\stealth\deps\chrome_payload.dll" (
+    set "CHROME_PAYLOAD_DLL=%~dp0target\stealth\deps\chrome_payload.dll"
+) else (
+    echo [X] chrome_payload.dll introuvable
+    goto end
+)
+echo Payload: %CHROME_PAYLOAD_DLL%
+
 echo.
 echo [2/2] jewish...
 cargo build --profile stealth -p jewish
