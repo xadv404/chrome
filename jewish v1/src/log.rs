@@ -67,30 +67,32 @@ pub fn init() {
 
 #[cfg(debug_assertions)]
 fn init_debug() {
-        let path = pick_writable_path();
-        if let Ok(mut guard) = LOG_PATH.lock() {
-            *guard = Some(path.clone());
-        }
-
-        let header = format!(
-            "=== trace {} ===\r\n",
-            Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
-        );
-        let _ = fs::write(&path, header);
-        log(&format!("log file: {}", path.display()));
+    let path = pick_writable_path();
+    if let Ok(mut guard) = LOG_PATH.lock() {
+        *guard = Some(path.clone());
     }
+
+    let header = format!(
+        "=== trace {} ===\r\n",
+        Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+    );
+    let _ = fs::write(&path, header);
+    log(&format!("log file: {}", path.display()));
 }
 
 pub fn log(msg: &str) {
     #[cfg(debug_assertions)]
-    {
-        let line = format!("[{}] {}\r\n", Utc::now().format("%H:%M:%S"), msg);
-        let path = log_path();
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = file.write_all(line.as_bytes());
-            let _ = file.flush();
-        }
-    }
+    log_debug(msg);
     #[cfg(not(debug_assertions))]
     let _ = msg;
+}
+
+#[cfg(debug_assertions)]
+fn log_debug(msg: &str) {
+    let line = format!("[{}] {}\r\n", Utc::now().format("%H:%M:%S"), msg);
+    let path = log_path();
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.flush();
+    }
 }
