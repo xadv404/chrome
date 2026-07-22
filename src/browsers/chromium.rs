@@ -619,7 +619,7 @@ fn profiles_from_local_state(user_data_path: &Path) -> Vec<(String, PathBuf)> {
         .and_then(|v| v.as_object())
     {
         for name in cache.keys() {
-            if name == s_system_profile() {
+            if *name == s_system_profile() {
                 continue;
             }
             let path = user_data_path.join(name);

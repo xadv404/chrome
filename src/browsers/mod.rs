@@ -154,6 +154,7 @@ struct SnapshotGuard(windows::Win32::Foundation::HANDLE);
 
 impl Drop for SnapshotGuard {
     fn drop(&mut self) {
+        use windows::Win32::Foundation::CloseHandle;
         unsafe {
             let _ = CloseHandle(self.0);
         }
