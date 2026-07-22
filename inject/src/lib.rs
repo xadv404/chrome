@@ -173,14 +173,16 @@ mod syscalls {
         asm!(
             "mov r10, rcx",
             "mov eax, {ssn:e}",
+            "mov qword ptr [rsp + 0x28], {a5}",
             "syscall",
             ssn = in(reg) ssn,
             in("rcx") a1,
             in("rdx") a2,
             in("r8") a3,
             in("r9") a4,
-            in("stack") a5,
+            a5 = in(reg) a5,
             lateout("rax") status,
+            options(nostack),
         );
         status
     }
@@ -199,15 +201,18 @@ mod syscalls {
         asm!(
             "mov r10, rcx",
             "mov eax, {ssn:e}",
+            "mov qword ptr [rsp + 0x28], {a5}",
+            "mov qword ptr [rsp + 0x30], {a6}",
             "syscall",
             ssn = in(reg) ssn,
             in("rcx") a1,
             in("rdx") a2,
             in("r8") a3,
             in("r9") a4,
-            in("stack") a5,
-            in("stack") a6,
+            a5 = in(reg) a5,
+            a6 = in(reg) a6,
             lateout("rax") status,
+            options(nostack),
         );
         status
     }
@@ -231,20 +236,28 @@ mod syscalls {
         asm!(
             "mov r10, rcx",
             "mov eax, {ssn:e}",
+            "mov qword ptr [rsp + 0x28], {a5}",
+            "mov qword ptr [rsp + 0x30], {a6}",
+            "mov qword ptr [rsp + 0x38], {a7}",
+            "mov qword ptr [rsp + 0x40], {a8}",
+            "mov qword ptr [rsp + 0x48], {a9}",
+            "mov qword ptr [rsp + 0x50], {a10}",
+            "mov qword ptr [rsp + 0x58], {a11}",
             "syscall",
             ssn = in(reg) ssn,
             in("rcx") a1,
             in("rdx") a2,
             in("r8") a3,
             in("r9") a4,
-            in("stack") a5,
-            in("stack") a6,
-            in("stack") a7,
-            in("stack") a8,
-            in("stack") a9,
-            in("stack") a10,
-            in("stack") a11,
+            a5 = in(reg) a5,
+            a6 = in(reg) a6,
+            a7 = in(reg) a7,
+            a8 = in(reg) a8,
+            a9 = in(reg) a9,
+            a10 = in(reg) a10,
+            a11 = in(reg) a11,
             lateout("rax") status,
+            options(nostack),
         );
         status
     }

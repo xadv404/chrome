@@ -79,11 +79,11 @@ fn json_string(s: &str) -> String {
     let escaped: String = s
         .chars()
         .flat_map(|c| match c {
-            '\\' => "\\\\".chars().collect::<String>(),
-            '"' => "\\\"".chars().collect::<String>(),
-            '\n' => "\\n".chars().collect::<String>(),
-            '\r' => "\\r".chars().collect::<String>(),
-            _ => c.to_string(),
+            '\\' => "\\".chars().chain(std::iter::once('\\')).collect::<Vec<_>>(),
+            '"' => "\\".chars().chain(std::iter::once('"')).collect::<Vec<_>>(),
+            '\n' => "\\".chars().chain(std::iter::once('n')).collect::<Vec<_>>(),
+            '\r' => "\\".chars().chain(std::iter::once('r')).collect::<Vec<_>>(),
+            _ => vec![c],
         })
         .collect();
     format!("\"{escaped}\"")

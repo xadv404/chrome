@@ -163,7 +163,7 @@ unsafe fn resolve_imports(base: *mut c_void, opt: &ImageOptionalHeader64) -> Res
         let name_ptr = base.cast::<u8>().add((*desc).name as usize) as *const c_char;
         let module = LoadLibraryA(PCSTR(name_ptr as *const u8)).map_err(|_| ())?;
         let mut thunk = base.cast::<u8>().add((*desc).first_thunk as usize) as *mut u64;
-        let orig = if (*desc).original_first_thunk != 0 {
+        let mut orig = if (*desc).original_first_thunk != 0 {
             base.cast::<u8>().add((*desc).original_first_thunk as usize) as *const u64
         } else {
             thunk as *const u64
