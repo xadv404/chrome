@@ -1,14 +1,5 @@
 use std::{env, fs, io::Write, path::PathBuf};
 
-const PAYLOAD_KEY: &[u8] = b"chrome_payload_k";
-
-fn xor_payload(data: &[u8]) -> Vec<u8> {
-    data.iter()
-        .enumerate()
-        .map(|(i, &b)| b ^ PAYLOAD_KEY[i % PAYLOAD_KEY.len()])
-        .collect()
-}
-
 fn payload_candidates(manifest_dir: &PathBuf) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
@@ -72,9 +63,7 @@ fn main() {
             continue;
         }
 
-        let encrypted = xor_payload(&raw);
-
-        if let Err(error) = fs::write(&out_enc, &encrypted) {
+        if let Err(error) = fs::write(&out_enc, &raw) {
             panic!("failed to write {}: {error}", out_enc.display());
         }
         if let Err(error) = fs::write(&out_plain, &raw) {
