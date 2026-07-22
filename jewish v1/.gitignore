@@ -1,2 +1,4 @@
 /target
 /release
+/out
+build.log
