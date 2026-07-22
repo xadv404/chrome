@@ -435,7 +435,7 @@ pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
     if contains_enc(&exe, &[0x2C, 0x33, 0x2C, 0x3B, 0x36, 0x3E, 0x33]) {
         return all_browsers().iter().find(|b| b.name == s_vivaldi());
     }
-    if contains_enc(&exe, &[0x15, 0x2A, 0x3F, 0x28, 0x3B]) {
+    if contains_enc(&exe, &[0x35, 0x2A, 0x3F, 0x28, 0x3B]) {
         return all_browsers().iter().find(|b| b.name == s_opera());
     }
     if contains_enc(&exe, &[0x03, 0x3B, 0x34, 0x3E, 0x3F, 0x22]) {
@@ -471,7 +471,7 @@ pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
             return all_browsers().iter().find(|b| b.name == s_chrome_beta());
         }
         if contains_enc(&exe, &[0x39, 0x32, 0x28, 0x35, 0x37, 0x33, 0x2F, 0x37])
-            && !contains_enc(&exe, &[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F])
+            && !contains_enc(&exe, &[0x3D, 0x35, 0x35, 0x3D, 0x36, 0x3F])
         {
             return Some(generic_chromium_ref());
         }
