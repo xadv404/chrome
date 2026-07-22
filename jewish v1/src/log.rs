@@ -60,8 +60,8 @@ pub fn log_path() -> PathBuf {
     pick_writable_path()
 }
 
+#[cfg(debug_assertions)]
 pub fn init() {
-    #[cfg(debug_assertions)]
     init_debug();
 }
 

