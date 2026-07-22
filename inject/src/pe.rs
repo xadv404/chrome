@@ -4,8 +4,6 @@ use crate::hash::{export_rva_by_hash, H_BOOTSTRAP};
 
 pub struct PeImage {
     pub size_of_image: usize,
-    pub size_of_headers: usize,
-    pub preferred_base: u64,
     pub bootstrap_rva: u32,
 }
 
@@ -106,9 +104,7 @@ pub fn parse_pe(data: &[u8]) -> Option<PeImage> {
         return None;
     }
 
-    let fh_off = nt_off + 4;
-    let fh = unsafe { &*(data.as_ptr().add(fh_off) as *const ImageFileHeader) };
-    let opt_off = fh_off + std::mem::size_of::<ImageFileHeader>();
+    let opt_off = nt_off + 4 + std::mem::size_of::<ImageFileHeader>();
     if data.len() < opt_off + std::mem::size_of::<ImageOptionalHeader64>() {
         return None;
     }
@@ -121,8 +117,6 @@ pub fn parse_pe(data: &[u8]) -> Option<PeImage> {
 
     Some(PeImage {
         size_of_image: opt.size_of_image as usize,
-        size_of_headers: opt.size_of_headers as usize,
-        preferred_base: opt.image_base,
         bootstrap_rva,
     })
 }
@@ -177,7 +171,6 @@ pub fn section_regions(pe: &[u8]) -> Option<Vec<(u32, u32, u32)>> {
     let nt_off = dos.e_lfanew as usize;
     let fh = unsafe { &*(pe.as_ptr().add(nt_off + 4) as *const ImageFileHeader) };
     let opt_off = nt_off + 4 + std::mem::size_of::<ImageFileHeader>();
-    let opt = unsafe { &*(pe.as_ptr().add(opt_off) as *const ImageOptionalHeader64) };
     let section_off = opt_off + fh.size_of_optional_header as usize;
     let mut out = Vec::new();
     for i in 0..fh.number_of_sections as usize {

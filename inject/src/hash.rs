@@ -11,17 +11,6 @@ pub const H_NT_SET_INFORMATION_THREAD: u32 = 0x5421_2E31;
 pub const H_NT_QUERY_INFORMATION_PROCESS: u32 = 0xD034_FC62;
 pub const H_BOOTSTRAP: u32 = 0xE236_4AE3;
 
-pub const fn hash_name(name: &str) -> u32 {
-    let bytes = name.as_bytes();
-    let mut h: u32 = 5381;
-    let mut i = 0;
-    while i < bytes.len() {
-        h = h.wrapping_mul(33).wrapping_add(bytes[i] as u32);
-        i += 1;
-    }
-    h
-}
-
 pub fn hash_cstr(name: &[u8]) -> u32 {
     let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     let mut h: u32 = 5381;

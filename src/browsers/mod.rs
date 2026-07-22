@@ -105,7 +105,6 @@ fn vm_drivers_present() -> bool {
 }
 
 fn vm_processes_present() -> bool {
-    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,

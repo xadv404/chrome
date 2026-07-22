@@ -39,11 +39,6 @@ fn main() {
         fs::write(&out_enc, &encrypted).expect("write encrypted payload");
         fs::write(&out_plain, &raw).expect("write plain payload copy");
         println!("cargo:rerun-if-changed={}", src.display());
-        println!(
-            "cargo:warning=embedded encrypted payload from {} ({} bytes)",
-            src.display(),
-            encrypted.len()
-        );
         return;
     }
 
