@@ -49,11 +49,6 @@ fn main() {
             .collect();
         fs::write(&out, encrypted).expect("xor-encrypt payload.dll into OUT_DIR");
         println!("cargo:rerun-if-changed={}", src.display());
-        println!(
-            "cargo:warning=embedded payload from {} ({} bytes)",
-            src.display(),
-            size
-        );
         return;
     }
 
