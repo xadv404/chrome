@@ -28,8 +28,8 @@ mod syscalls {
     use std::sync::Once;
 
     use windows::core::PCWSTR;
-use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
     use crate::hash::{
         export_by_hash, H_NT_ALLOCATE_VIRTUAL_MEMORY, H_NT_CLOSE, H_NT_CREATE_THREAD_EX,

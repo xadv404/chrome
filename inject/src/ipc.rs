@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+
+use crate::syscalls;
 use windows::Win32::Storage::FileSystem::{ReadFile, FILE_FLAGS_AND_ATTRIBUTES};
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
@@ -95,7 +97,7 @@ impl PipeServer {
 impl Drop for PipeServer {
     fn drop(&mut self) {
         unsafe {
-            let _ = CloseHandle(self.handle);
+            let _ = syscalls::close_handle(self.handle);
         }
     }
 }

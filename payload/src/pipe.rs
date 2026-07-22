@@ -1,7 +1,9 @@
 //! Named pipe IPC client for injector communication.
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::HANDLE;
+
+use crate::syscalls;
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     FILE_SHARE_NONE, OPEN_EXISTING,
@@ -68,7 +70,7 @@ impl PipeClient {
 impl Drop for PipeClient {
     fn drop(&mut self) {
         unsafe {
-            let _ = CloseHandle(self.handle);
+            let _ = syscalls::close_handle(self.handle);
         }
     }
 }

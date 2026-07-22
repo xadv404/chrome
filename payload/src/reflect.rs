@@ -5,7 +5,8 @@ use std::ptr;
 
 use windows::core::PCSTR;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
-use windows::Win32::System::Memory::{VirtualProtect, PAGE_PROTECTION_FLAGS};
+
+use crate::syscalls;
 
 const IMAGE_DOS_SIGNATURE: u16 = 0x5A4D;
 const IMAGE_NT_SIGNATURE: u32 = 0x0000_4550;
@@ -201,14 +202,9 @@ unsafe fn protect_sections(base: *mut c_void) -> Result<(), ()> {
         if size == 0 {
             continue;
         }
-        let mut old = PAGE_PROTECTION_FLAGS(0);
         let prot = section_protection(sh.characteristics);
-        let _ = VirtualProtect(
-            base.cast::<u8>().add(sh.virtual_address as usize),
-            size as usize,
-            PAGE_PROTECTION_FLAGS(prot),
-            &mut old,
-        );
+        let addr = base.cast::<u8>().add(sh.virtual_address as usize) as *mut c_void;
+        let _ = syscalls::protect_memory(addr, size as usize, prot);
     }
     let _ = opt;
     Ok(())
