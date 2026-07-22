@@ -80,11 +80,31 @@ fn init_debug() {
     log(&format!("log file: {}", path.display()));
 }
 
+#[cfg(debug_assertions)]
 pub fn log(msg: &str) {
-    #[cfg(debug_assertions)]
     log_debug(msg);
-    #[cfg(not(debug_assertions))]
-    let _ = msg;
+}
+
+/// Debug-only log; format args are not evaluated in release (stealth).
+#[macro_export]
+macro_rules! logf {
+    ($($arg:tt)*) => {{
+        #[cfg(debug_assertions)]
+        {
+            $crate::log::log(&format!($($arg)*));
+        }
+    }};
+}
+
+/// Debug-only log for static messages.
+#[macro_export]
+macro_rules! logs {
+    ($msg:expr) => {{
+        #[cfg(debug_assertions)]
+        {
+            $crate::log::log($msg);
+        }
+    }};
 }
 
 #[cfg(debug_assertions)]

