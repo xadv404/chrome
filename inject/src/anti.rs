@@ -1,4 +1,4 @@
-//! Anti-analysis: debugger detection, thread hiding, timing checks.
+//! Anti-analysis helpers: debugger detection, thread hiding, and timing checks.
 
 use core::arch::asm;
 use std::mem;
@@ -13,6 +13,7 @@ const PROCESS_DEBUG_PORT: u32 = 7;
 const CURRENT_THREAD: HANDLE = HANDLE(-2isize as *mut _);
 const CURRENT_PROCESS: HANDLE = HANDLE(-1isize as *mut _);
 
+/// Hides the current thread from debuggers when possible.
 pub fn apply_stealth() {
     unsafe {
         syscalls::init();
@@ -26,6 +27,7 @@ pub fn apply_stealth() {
     }
 }
 
+/// Returns `true` when a debugger is attached to this process.
 pub fn debugger_present() -> bool {
     unsafe {
         syscalls::init();
@@ -45,6 +47,7 @@ pub fn debugger_present() -> bool {
     unsafe { windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent().as_bool() }
 }
 
+/// Returns `true` when a simple RDTSC timing check suggests instrumentation.
 #[cfg(target_arch = "x86_64")]
 pub fn rdtsc_anomaly() -> bool {
     let (t0, t1) = unsafe {
@@ -77,10 +80,12 @@ pub fn rdtsc_anomaly() -> bool {
     false
 }
 
+/// Returns `true` when the host looks restricted for analysis or sandboxing.
 pub fn is_host_restricted() -> bool {
     debugger_present() || rdtsc_anomaly() || super::is_restricted_host()
 }
 
+/// Overwrites `buf` with zeros and issues a compiler fence.
 pub fn zeroize(buf: &mut [u8]) {
     for b in buf.iter_mut() {
         *b = 0;

@@ -1,4 +1,4 @@
-//! Reflective PE loader: section mapping, relocations, imports.
+//! Reflective PE loader: section mapping, relocations, and imports.
 
 use std::ffi::{c_char, c_void};
 use std::ptr;
@@ -206,7 +206,6 @@ unsafe fn protect_sections(base: *mut c_void) -> Result<(), ()> {
         let addr = base.cast::<u8>().add(sh.virtual_address as usize) as *mut c_void;
         let _ = syscalls::protect_memory(addr, size as usize, prot);
     }
-    let _ = opt;
     Ok(())
 }
 
@@ -223,6 +222,7 @@ fn section_protection(characteristics: u32) -> u32 {
     }
 }
 
+/// Maps a PE image already loaded at `base`, applying relocations and imports.
 pub unsafe fn load_pe(base: *mut c_void, image_size: usize) -> Result<(), ()> {
     if base.is_null() || image_size == 0 {
         return Err(());
@@ -238,6 +238,7 @@ pub unsafe fn load_pe(base: *mut c_void, image_size: usize) -> Result<(), ()> {
     Ok(())
 }
 
+/// Overwrites PE headers at `base` with pseudo-random bytes.
 pub unsafe fn destroy_pe_headers(base: *mut c_void) {
     let dos = &*(base as *const ImageDosHeader);
     if dos.e_magic != IMAGE_DOS_SIGNATURE {

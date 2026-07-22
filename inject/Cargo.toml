@@ -1,7 +1,8 @@
 [package]
 name = "inject"
 version = "1.0.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 windows = { version = "0.58", features = [

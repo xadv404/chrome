@@ -2,10 +2,15 @@
 members = [".", "inject", "payload"]
 resolver = "2"
 
+[workspace.package]
+edition = "2021"
+rust-version = "1.76"
+
 [package]
 name = "jewish"
 version = "1.0.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
 build = "build.rs"
 
 [[bin]]
@@ -28,7 +33,7 @@ rusqlite = { version = "0.29.0", features = ["bundled"] }
 chacha20poly1305 = "0.10"
 
 [dependencies.windows]
-version = "0.52"
+version = "0.58"
 features = [
     "Win32_Security_Cryptography",
     "Win32_Foundation",
@@ -42,5 +47,9 @@ features = [
 opt-level = "s"
 lto = "thin"
 codegen-units = 16
-strip = true
+strip = "symbols"
 panic = "abort"
+
+[lints.rust]
+unsafe_code = "allow"
+unused = "warn"

